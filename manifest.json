@@ -1,8 +1,8 @@
 {
- "checkedAt": "2026-10-21T17:28:50+09:00",
- "mode": "full",
- "ordinances": 564,
- "rules": 104,
+ "checkedAt": "2026-10-21T17:43:29+09:00",
+ "mode": "incremental",
+ "ordinances": 645,
+ "rules": 110,
  "absent": 0,
  "org": "충청북도 청주시"
 }
