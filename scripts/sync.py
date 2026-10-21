@@ -21,6 +21,8 @@ ORG = os.environ.get('ORG', '').strip()
 SBORG = os.environ.get('SBORG', '').strip()
 KINDS = ('조례', '규칙')
 PAUSE = float(os.environ.get('PAUSE') or '0.3')
+BUDGET_MIN = float(os.environ.get('BUDGET_MIN') or '45')   # 이 시간(분)이 지나면 지금까지 받은 것을 저장하고 멈춰요(다음 실행이 이어받아요)
+T0 = time.time()
 FIELDS = ('자치법규일련번호', '자치법규ID', '자치법규명', '공포일자', '공포번호', '제개정구분명',
           '지자체기관명', '자치법규종류', '시행일자', '자치법규상세링크')
 
@@ -41,7 +43,7 @@ def fetch(path, params, oc):
     for i in range(4):
         try:
             req = urllib.request.Request(url, headers={'User-Agent': UA})
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=30) as r:
                 data = r.read()
             head = data[:600].decode('utf-8', 'ignore')
             if '사용자 정보 검증에 실패' in head or '사용자정보 검증' in head:
@@ -83,6 +85,7 @@ def collect(oc, limit=None):
             if not rows:
                 break
             got += len(rows)
+            print('목록 %s p%d: %d/%s건 (%.0f초)' % (qn, page, got, total, time.time() - T0), flush=True)
             for r in rows:
                 orgs[r['지자체기관명']] = orgs.get(r['지자체기관명'], 0) + 1
                 if not r['지자체기관명'].startswith(ORG_PREFIX) or r['자치법규종류'] not in KINDS:
@@ -250,6 +253,12 @@ def run(mode, limit=None):
         print('목록이 이전(%d건)보다 크게 줄었어요(%d건). 안전을 위해 중단합니다.' % (len(active_before), len(items)))
         return 1
     new, changed, errors = [], [], []
+    partial = False
+    todo = sum(1 for it in items if mode == 'full' or idx.get(it['자치법규ID']) is None
+               or idx[it['자치법규ID']].get('mst') != it['자치법규일련번호'] or idx[it['자치법규ID']].get('status') != 'active'
+               or not os.path.exists(os.path.join(ROOT, idx[it['자치법규ID']]['path'])))
+    print('본문을 새로 받을 것: %d건 (전체 %d건)' % (todo, len(items)), flush=True)
+    done = 0
     for it in sorted(items, key=lambda r: r['자치법규ID']):
         i = it['자치법규ID']
         old = idx.get(i)
@@ -257,6 +266,13 @@ def run(mode, limit=None):
         need = (mode == 'full' or old is None or old.get('mst') != it['자치법규일련번호']
                 or old.get('status') != 'active' or not os.path.exists(os.path.join(ROOT, old['path'])))
         if need:
+            if (time.time() - T0) / 60 > BUDGET_MIN:
+                partial = True
+                print('시간 한도(%.0f분)에 도달해서 여기까지 저장하고 멈춰요. 다음 실행이 이어받아요.' % BUDGET_MIN, flush=True)
+                break
+            done += 1
+            if done % 25 == 0:
+                print('본문 %d/%d건 (%.0f초)' % (done, todo, time.time() - T0), flush=True)
             try:
                 data = fetch('lawService.do', {'target': 'ordin', 'type': 'XML', 'MST': it['자치법규일련번호']}, oc)
                 name, md = to_markdown(data, it)
@@ -292,7 +308,7 @@ def run(mode, limit=None):
                             'org': ORG_PREFIX})
     jsave('reports/latest-sync.json', {'checkedAt': now(), 'mode': mode, 'listed': len(items), 'new': new,
                                        'changed': changed, 'absent': gone, 'errors': errors})
-    print('새로 %d · 개정 %d · 목록에서 사라짐 %d · 오류 %d' % (len(new), len(changed), len(gone), len(errors)))
+    print('새로 %d · 개정 %d · 목록에서 사라짐 %d · 오류 %d%s' % (len(new), len(changed), len(gone), len(errors), ' · 부분 완료(이어받기 필요)' if partial else ''))
     return 1 if errors else 0
 
 
