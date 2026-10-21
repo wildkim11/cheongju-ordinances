@@ -175,7 +175,9 @@ def to_markdown(data, meta):
         body += ['', '## 별표·서식', '', all_text(bp)]
     text = '\n'.join(body).strip()
     if len(re.sub(r'\s', '', text)) < 30:
-        raise ApiError('본문이 비어 있거나 형식이 달라요: ' + name)
+        raise ApiError('본문이 비어 있거나 형식이 달라요: %s [최상위 태그 %s, 조문 %s자, 부칙 %s자, 별표 %s자]' % (
+            name, [c.tag for c in root], len(all_text(art)) if art is not None else 0,
+            len(all_text(bu)) if bu is not None else 0, len(all_text(bp)) if bp is not None else 0))
     fm = [('id', meta['자치법규ID']), ('name', name), ('kind', meta['자치법규종류']), ('org', meta['지자체기관명']),
           ('mst', meta['자치법규일련번호']), ('promulgated', g('공포일자') or meta['공포일자']),
           ('effective', g('시행일자') or meta['시행일자']), ('revision', meta['제개정구분명']),
@@ -249,26 +251,112 @@ def probe(oc):
     return 0
 
 
-def law_peek(oc):
-    # 법령(target=law) 응답 모양을 로그에 찍어 둬요(저장 안 함, 실패해도 무시).
-    try:
-        d = fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': '지방재정법', 'display': '5'}, oc)
-        root = ET.fromstring(d)
-        rows = list(root.iter('law'))
-        print('[법령 시험] 목록 항목 태그:', [c.tag for c in rows[0]] if rows else '없음', '· 전체', root.findtext('totalCnt'))
-        if rows:
-            r0 = rows[0]
-            mst = r0.findtext('법령일련번호') or ''
-            b = ET.fromstring(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': mst}, oc))
-            print('[법령 시험] 본문 최상위 태그:', [c.tag for c in b])
-            bi = b.find('기본정보')
-            if bi is not None:
-                print('[법령 시험] 기본정보 태그:', [c.tag for c in bi][:40])
-            jo = next(b.iter('조문단위'), None)
-            if jo is not None:
-                print('[법령 시험] 조문단위 태그:', [c.tag for c in jo])
-    except Exception as e:
-        print('[법령 시험] 건너뜀:', e)
+LAW_LIST_FIELDS = ('법령일련번호', '현행연혁코드', '법령명한글', '법령약칭명', '법령ID', '공포일자', '공포번호',
+                   '제개정구분명', '소관부처코드', '소관부처명', '법령구분명', '시행일자')
+
+
+def parse_law_list(data):
+    root = ET.fromstring(data)
+    return [{k: (e.findtext(k) or '').strip() for k in LAW_LIST_FIELDS} for e in root.iter('law')]
+
+
+def norm_name(x):
+    return re.sub(r'[\s]+', '', (x or '').replace('ㆍ', '·').replace('‧', '·'))
+
+
+def law_source_url(meta):
+    return 'https://www.law.go.kr/lsInfoP.do?lsiSeq=' + meta['법령일련번호']
+
+
+def law_markdown(data, meta):
+    root = ET.fromstring(data)
+    base = root.find('기본정보')
+    info = {}
+    if base is not None:
+        for ch in base:
+            v = (ch.text or '').strip()
+            if v and len(v) <= 200 and len(ch) == 0:
+                info[ch.tag] = v
+            elif len(ch) and (ch.findtext('부서명') or ch.findtext('소관부처명') or ch.text):
+                pass
+    body = []
+    art = root.find('조문')
+    if art is not None:
+        jos = list(art.iter('조문단위'))
+        body += render_articles(jos) if jos else [all_text(art)]
+    bu = root.find('부칙')
+    if bu is not None and all_text(bu):
+        body += ['', '## 부칙', '', all_text(bu)]
+    bp = root.find('별표')
+    if bp is not None and all_text(bp):
+        body += ['', '## 별표·서식', '', all_text(bp)]
+    text = '\n'.join(body).strip()
+    if len(re.sub(r'\s', '', text)) < 30:
+        raise ApiError('법령 본문이 비어 있거나 형식이 달라요: %s [최상위 태그 %s]' % (meta['법령명한글'], [c.tag for c in root]))
+    fm = [('id', meta['법령ID']), ('name', meta['법령명한글']), ('kind', meta['법령구분명']), ('ministry', meta['소관부처명']),
+          ('mst', meta['법령일련번호']), ('promulgated', meta['공포일자']), ('promulgation_no', meta['공포번호']),
+          ('effective', meta['시행일자']), ('revision', meta['제개정구분명']), ('source', law_source_url(meta)), ('fetched', now())]
+    used = {'법령ID', '법령명_한글', '공포일자', '공포번호', '시행일자', '제개정구분', '법종류'}
+    fm += [(k, v) for k, v in info.items() if k not in used]
+    head = '---\n' + '\n'.join('%s: %s' % (k, json.dumps(v, ensure_ascii=False)) for k, v in fm) + '\n---\n'
+    return head + '\n# ' + meta['법령명한글'] + '\n\n' + text + '\n', info
+
+
+def law_rel_path(meta):
+    return 'laws/%s/%s_%s.md' % (safe(meta['법령구분명'] or '기타'), meta['법령ID'], safe(meta['법령명한글']))
+
+
+def sync_laws(oc, mode):
+    """laws.json에 적은 이름(정확히 같은 법령명)의 현행 법령을 받아 laws/ 에 저장해요."""
+    cfg = jload('laws.json', {})
+    names = []
+    for g in cfg.get('groups', []):
+        for n in g.get('names', []):
+            if n not in names:
+                names.append(n)
+    if not names:
+        print('[법령] laws.json이 없거나 비었어요. 건너뜀')
+        return [], []
+    idx = {r['id']: r for r in jload('indexes/laws.json', [])}
+    new, errors, missing = [], [], []
+    for n, name in enumerate(names, 1):
+        if (time.time() - T0) / 60 > BUDGET_MIN + 10:
+            print('[법령] 시간 한도라 여기까지 저장해요. 다음 실행이 이어받아요.', flush=True)
+            break
+        try:
+            rows = parse_law_list(fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': name,
+                                                          'search': '1', 'display': '100', 'nw': '3'}, oc))
+            hit = [r for r in rows if norm_name(r['법령명한글']) == norm_name(name) and r['현행연혁코드'] in ('현행', '')]
+            if not hit:
+                missing.append(name)
+                print('[법령] 이름이 같은 현행 법령을 못 찾았어요:', name, flush=True)
+                continue
+            m = sorted(hit, key=lambda r: r['시행일자'])[-1]
+            old = idx.get(m['법령ID'])
+            if (mode != 'full' and old and old.get('mst') == m['법령일련번호']
+                    and os.path.exists(os.path.join(ROOT, old['path']))):
+                idx[m['법령ID']]['checked'] = now()
+                continue
+            md, info = law_markdown(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': m['법령일련번호']}, oc), m)
+            md = scrub(md, oc)
+            path = law_rel_path(m)
+            if old and old['path'] != path and os.path.exists(os.path.join(ROOT, old['path'])):
+                os.remove(os.path.join(ROOT, old['path']))
+            p = os.path.join(ROOT, path)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, 'w', encoding='utf-8').write(md)
+            idx[m['법령ID']] = {'id': m['법령ID'], 'name': name, 'kind': m['법령구분명'], 'ministry': m['소관부처명'],
+                                'mst': m['법령일련번호'], 'promulgated': m['공포일자'], 'promulgation_no': m['공포번호'],
+                                'effective': m['시행일자'], 'revision': m['제개정구분명'], 'path': path, 'sha256': sha(md),
+                                'source': law_source_url(m), 'info': info, 'checked': now()}
+            new.append(name)
+            print('[법령] %d/%d %s (%s)' % (n, len(names), name, m['시행일자']), flush=True)
+        except (ApiError, ET.ParseError) as e:
+            errors.append('%s: %s' % (name, e))
+            print('[법령] 오류', errors[-1], flush=True)
+    jsave('indexes/laws.json', sorted(idx.values(), key=lambda r: r['id']))
+    print('[법령] 새로·개정 %d · 못 찾음 %d · 오류 %d' % (len(new), len(missing), len(errors)))
+    return missing, errors
 
 
 def run(mode, limit=None):
@@ -334,6 +422,8 @@ def run(mode, limit=None):
                   'mst': it['자치법규일련번호'], 'promulgated': it['공포일자'], 'effective': it['시행일자'],
                   'revision': it['제개정구분명'], 'path': path, 'sha256': digest, 'status': 'active',
                   'source': source_url(it), 'info': info, 'checked': now()}
+    lmiss, lerr = sync_laws(oc, mode)
+    errors += lerr
     seen = {it['자치법규ID'] for it in items}
     gone = []
     for i, r in idx.items():
@@ -347,8 +437,7 @@ def run(mode, limit=None):
                             'rules': sum(1 for r in act if r['kind'] == '규칙'), 'absent': sum(1 for r in idx.values() if r['status'] != 'active'),
                             'org': ORG_PREFIX})
     jsave('reports/latest-sync.json', {'checkedAt': now(), 'mode': mode, 'listed': len(items), 'new': new,
-                                       'changed': changed, 'absent': gone, 'errors': errors})
-    law_peek(oc)
+                                       'changed': changed, 'absent': gone, 'errors': errors, 'laws_missing': lmiss})
     print('새로 %d · 개정 %d · 목록에서 사라짐 %d · 오류 %d%s' % (len(new), len(changed), len(gone), len(errors), ' · 부분 완료(이어받기 필요)' if partial else ''))
     return 1 if errors else 0
 

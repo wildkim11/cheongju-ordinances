@@ -26,6 +26,16 @@ files = {os.path.relpath(os.path.join(d, n), ROOT) for d, _, ns in os.walk(os.pa
 extra = files - {r['path'] for r in idx}
 if extra:
     bad.append('색인에 없는 파일 %d개' % len(extra))
+lp = os.path.join(ROOT, 'indexes', 'laws.json')
+if os.path.exists(lp):
+    for r in json.load(open(lp, encoding='utf-8')):
+        f = os.path.join(ROOT, r['path'])
+        if not os.path.exists(f):
+            bad.append('법령 파일 없음 ' + r['path'])
+        else:
+            t = open(f, encoding='utf-8').read()
+            if hashlib.sha256(t.encode('utf-8')).hexdigest() != r['sha256']:
+                bad.append('법령 해시 불일치 ' + r['path'])
 print('색인 %d건 점검, 문제 %d건' % (len(idx), len(bad)))
 for b in bad[:20]:
     print(' ', b)
