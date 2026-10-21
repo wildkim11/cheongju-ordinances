@@ -169,10 +169,18 @@ def to_markdown(data, meta):
 
 
 def source_url(meta):
-    l = meta.get('자치법규상세링크', '')
-    if l.startswith('/'):
-        return 'https://www.law.go.kr' + l
-    return l or 'https://www.law.go.kr/ordinInfoP.do?ordinSeq=' + meta['자치법규일련번호']
+    # API 링크에는 인증키(OC)가 들어 있어서 쓰지 않고, 누구나 열 수 있는 공개 화면 주소를 만들어요.
+    return 'https://www.law.go.kr/ordinInfoP.do?ordinSeq=' + meta['자치법규일련번호']
+
+
+def scrub(data, oc):
+    # 저장하는 모든 원본·본문에서 인증키를 지워요.
+    if isinstance(data, bytes):
+        data = data.decode('utf-8', 'ignore')
+    data = re.sub(r'(?i)([?&;]|&amp;)OC=[^&<"\s]*', r'\1OC=***', data)
+    if oc:
+        data = data.replace(oc, '***')
+    return data
 
 
 def safe(name):
@@ -205,7 +213,7 @@ def probe(oc):
     os.makedirs(os.path.join(ROOT, 'probe'), exist_ok=True)
     data = fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': QUERIES[0], 'search': '1',
                                    'display': '20', 'page': '1', 'nw': '3'}, oc)
-    open(os.path.join(ROOT, 'probe', 'list.xml'), 'wb').write(data)
+    open(os.path.join(ROOT, 'probe', 'list.xml'), 'w', encoding='utf-8').write(scrub(data, oc))
     total, rows = parse_list(data)
     print('전체 건수(검색어 %s): %s, 이번 페이지 %d건' % (QUERIES[0], total, len(rows)))
     for r in rows[:5]:
@@ -215,7 +223,7 @@ def probe(oc):
         print('청주시 조례·규칙을 목록에서 못 찾았어요. 기관명 예:', sorted({r['지자체기관명'] for r in rows})[:5])
         return 1
     body = fetch('lawService.do', {'target': 'ordin', 'type': 'XML', 'MST': pick['자치법규일련번호']}, oc)
-    open(os.path.join(ROOT, 'probe', 'body.xml'), 'wb').write(body)
+    open(os.path.join(ROOT, 'probe', 'body.xml'), 'w', encoding='utf-8').write(scrub(body, oc))
     name, md = to_markdown(body, pick)
     print('본문 변환 성공:', name, '(%d자)' % len(md))
     print(md[:600])
@@ -258,6 +266,7 @@ def run(mode, limit=None):
                 continue
             if old and old['path'] != path and os.path.exists(os.path.join(ROOT, old['path'])):
                 os.remove(os.path.join(ROOT, old['path']))
+            md = scrub(md, oc)
             p = os.path.join(ROOT, path)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, 'w', encoding='utf-8').write(md)
