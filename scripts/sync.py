@@ -31,6 +31,10 @@ class ApiError(Exception):
     pass
 
 
+class EmptyBody(ApiError):
+    pass
+
+
 def now():
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec='seconds')
 
@@ -175,7 +179,7 @@ def to_markdown(data, meta):
         body += ['', '## 별표·서식', '', all_text(bp)]
     text = '\n'.join(body).strip()
     if len(re.sub(r'\s', '', text)) < 30:
-        raise ApiError('본문이 비어 있거나 형식이 달라요: %s [최상위 태그 %s, 조문 %s자, 부칙 %s자, 별표 %s자]' % (
+        raise EmptyBody('본문이 비어 있거나 형식이 달라요: %s [최상위 태그 %s, 조문 %s자, 부칙 %s자, 별표 %s자]' % (
             name, [c.tag for c in root], len(all_text(art)) if art is not None else 0,
             len(all_text(bu)) if bu is not None else 0, len(all_text(bp)) if bp is not None else 0))
     fm = [('id', meta['자치법규ID']), ('name', name), ('kind', meta['자치법규종류']), ('org', meta['지자체기관명']),
@@ -187,6 +191,16 @@ def to_markdown(data, meta):
     fm += extra
     head = '---\n' + '\n'.join('%s: %s' % (k, json.dumps(v, ensure_ascii=False)) for k, v in fm) + '\n---\n'
     return name, head + '\n# ' + name + '\n\n' + text + '\n'
+
+
+def stub_markdown(meta, info, reason):
+    # 법제처가 본문을 내려주지 않는 자치법규는 목록 정보만 남기고 원문 링크를 안내해요.
+    fm = [('id', meta['자치법규ID']), ('name', meta['자치법규명']), ('kind', meta['자치법규종류']), ('org', meta['지자체기관명']),
+          ('mst', meta['자치법규일련번호']), ('promulgated', meta['공포일자']), ('effective', meta['시행일자']),
+          ('revision', meta['제개정구분명']), ('source', source_url(meta)), ('fetched', now()), ('body_unavailable', True)]
+    fm += [(k, v) for k, v in info.items() if k not in {'자치법규ID', '자치법규명', '자치법규종류', '지자체기관명', '자치법규일련번호', '공포일자', '시행일자', '제개정구분명'}]
+    head = '---\n' + '\n'.join('%s: %s' % (k, json.dumps(v, ensure_ascii=False)) for k, v in fm) + '\n---\n'
+    return head + '\n# ' + meta['자치법규명'] + '\n\n본문을 법제처 API가 제공하지 않아서 목록 정보만 보관해요. 원문은 위 `source` 주소에서 확인하세요.\n\n(' + reason + ')\n'
 
 
 def source_url(meta):
@@ -403,6 +417,11 @@ def run(mode, limit=None):
                 data = fetch('lawService.do', {'target': 'ordin', 'type': 'XML', 'MST': it['자치법규일련번호']}, oc)
                 name, md = to_markdown(data, it)
                 info = base_info(data)
+            except EmptyBody as e:
+                name = it['자치법규명']
+                md = stub_markdown(it, base_info(data), '본문 없음')
+                info = base_info(data)
+                print('경고 본문 없음, 목록 정보만 저장:', i, name, flush=True)
             except (ApiError, ET.ParseError) as e:
                 errors.append('%s %s: %s' % (i, it['자치법규명'], e))
                 print('오류', errors[-1])
