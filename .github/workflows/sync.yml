@@ -1,0 +1,52 @@
+name: Update ordinances
+on:
+  schedule:
+    - cron: '23 21 * * *'   # 매일 한국시간 06:23
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'probe: 응답 확인 / incremental: 새것·개정만 / full: 전부 다시'
+        type: choice
+        default: incremental
+        options:
+          - probe
+          - incremental
+          - full
+permissions:
+  contents: write
+concurrency:
+  group: ordinances-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test
+        run: python -m unittest discover -s tests
+      - name: Collect ordinances
+        id: collect
+        continue-on-error: true
+        env:
+          LAW_OC: ${{ secrets.LAW_OC }}
+          ORG: ${{ vars.ORG }}
+          SBORG: ${{ vars.SBORG }}
+          QUERIES: ${{ vars.QUERIES }}
+        run: python -u scripts/sync.py --mode "${{ inputs.mode || 'incremental' }}"
+      - name: Validate
+        run: python scripts/validate.py
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "변경 없음"; else git commit -m "data: refresh ordinances $(date -u +%F)" && git push; fi
+      - name: Fail if collection had errors
+        if: steps.collect.outcome == 'failure'
+        run: |
+          echo "수집 단계에서 오류가 있었어요. 위 Collect ordinances 로그를 확인하세요."
+          exit 1
