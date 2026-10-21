@@ -14,13 +14,13 @@ import xml.etree.ElementTree as ET
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API = os.environ.get('LAW_API_BASE', 'https://www.law.go.kr/DRF/').rstrip('/') + '/'
 UA = 'cheongju-ordinances/1.0'
-ORG_PREFIX = os.environ.get('ORG_PREFIX', '충청북도 청주시')
-QUERIES = [q.strip() for q in os.environ.get('QUERIES', '청주').split(',') if q.strip()]
+ORG_PREFIX = os.environ.get('ORG_PREFIX') or '충청북도 청주시'
+QUERIES = [q.strip() for q in (os.environ.get('QUERIES') or '청주').split(',') if q.strip()] or ['청주']
 # 법제처 지자체 기관코드를 알면 ORG(시·도), SBORG(시·군·구)로 기관 자체를 걸러 검색할 수 있어요(비워 두면 이름 검색 + 기관명 확인).
 ORG = os.environ.get('ORG', '').strip()
 SBORG = os.environ.get('SBORG', '').strip()
 KINDS = ('조례', '규칙')
-PAUSE = float(os.environ.get('PAUSE', '0.3'))
+PAUSE = float(os.environ.get('PAUSE') or '0.3')
 FIELDS = ('자치법규일련번호', '자치법규ID', '자치법규명', '공포일자', '공포번호', '제개정구분명',
           '지자체기관명', '자치법규종류', '시행일자', '자치법규상세링크')
 
