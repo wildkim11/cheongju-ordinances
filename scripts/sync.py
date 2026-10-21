@@ -142,6 +142,19 @@ def render_articles(jos):
     return out
 
 
+def base_info(data):
+    # 자치법규기본정보 안의 짧은 항목(담당부서명·전화번호·분야 등)을 이름 그대로 전부 담아요.
+    root = ET.fromstring(data)
+    base = root.find('자치법규기본정보')
+    out = {}
+    if base is not None:
+        for ch in base:
+            v = (ch.text or '').strip()
+            if v and len(v) <= 200 and len(ch) == 0:
+                out[ch.tag] = v
+    return out
+
+
 def to_markdown(data, meta):
     root = ET.fromstring(data)
     base = root.find('자치법규기본정보')
@@ -167,6 +180,9 @@ def to_markdown(data, meta):
           ('mst', meta['자치법규일련번호']), ('promulgated', g('공포일자') or meta['공포일자']),
           ('effective', g('시행일자') or meta['시행일자']), ('revision', meta['제개정구분명']),
           ('source', source_url(meta)), ('fetched', now())]
+    used = {'자치법규ID', '자치법규명', '자치법규종류', '지자체기관명', '자치법규일련번호', '공포일자', '시행일자', '제개정구분명'}
+    extra = [(k, v) for k, v in base_info(data).items() if k not in used]
+    fm += extra
     head = '---\n' + '\n'.join('%s: %s' % (k, json.dumps(v, ensure_ascii=False)) for k, v in fm) + '\n---\n'
     return name, head + '\n# ' + name + '\n\n' + text + '\n'
 
@@ -233,6 +249,28 @@ def probe(oc):
     return 0
 
 
+def law_peek(oc):
+    # 법령(target=law) 응답 모양을 로그에 찍어 둬요(저장 안 함, 실패해도 무시).
+    try:
+        d = fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': '지방재정법', 'display': '5'}, oc)
+        root = ET.fromstring(d)
+        rows = list(root.iter('law'))
+        print('[법령 시험] 목록 항목 태그:', [c.tag for c in rows[0]] if rows else '없음', '· 전체', root.findtext('totalCnt'))
+        if rows:
+            r0 = rows[0]
+            mst = r0.findtext('법령일련번호') or ''
+            b = ET.fromstring(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': mst}, oc))
+            print('[법령 시험] 본문 최상위 태그:', [c.tag for c in b])
+            bi = b.find('기본정보')
+            if bi is not None:
+                print('[법령 시험] 기본정보 태그:', [c.tag for c in bi][:40])
+            jo = next(b.iter('조문단위'), None)
+            if jo is not None:
+                print('[법령 시험] 조문단위 태그:', [c.tag for c in jo])
+    except Exception as e:
+        print('[법령 시험] 건너뜀:', e)
+
+
 def run(mode, limit=None):
     oc = os.environ.get('LAW_OC', '').strip()
     if not oc:
@@ -276,6 +314,7 @@ def run(mode, limit=None):
             try:
                 data = fetch('lawService.do', {'target': 'ordin', 'type': 'XML', 'MST': it['자치법규일련번호']}, oc)
                 name, md = to_markdown(data, it)
+                info = base_info(data)
             except (ApiError, ET.ParseError) as e:
                 errors.append('%s %s: %s' % (i, it['자치법규명'], e))
                 print('오류', errors[-1])
@@ -290,10 +329,11 @@ def run(mode, limit=None):
             digest = sha(md)
         else:
             digest = old['sha256']
+            info = old.get('info', {})
         idx[i] = {'id': i, 'name': it['자치법규명'], 'kind': it['자치법규종류'], 'org': it['지자체기관명'],
                   'mst': it['자치법규일련번호'], 'promulgated': it['공포일자'], 'effective': it['시행일자'],
                   'revision': it['제개정구분명'], 'path': path, 'sha256': digest, 'status': 'active',
-                  'source': source_url(it), 'checked': now()}
+                  'source': source_url(it), 'info': info, 'checked': now()}
     seen = {it['자치법규ID'] for it in items}
     gone = []
     for i, r in idx.items():
@@ -308,6 +348,7 @@ def run(mode, limit=None):
                             'org': ORG_PREFIX})
     jsave('reports/latest-sync.json', {'checkedAt': now(), 'mode': mode, 'listed': len(items), 'new': new,
                                        'changed': changed, 'absent': gone, 'errors': errors})
+    law_peek(oc)
     print('새로 %d · 개정 %d · 목록에서 사라짐 %d · 오류 %d%s' % (len(new), len(changed), len(gone), len(errors), ' · 부분 완료(이어받기 필요)' if partial else ''))
     return 1 if errors else 0
 
