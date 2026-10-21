@@ -38,6 +38,17 @@ class T(unittest.TestCase):
         self.assertEqual(info.get('소관부처'), '행정안전부')
         self.assertEqual(sync.norm_name('출자ㆍ출연 기관'), '출자·출연기관')
 
+    def test_empty_body_stub(self):
+        meta = {'자치법규ID': 'Z1', '자치법규일련번호': '5', '자치법규명': '청주시 빈 조례', '자치법규종류': '조례',
+                '지자체기관명': '충청북도 청주시', '공포일자': '20250101', '시행일자': '20250101', '제개정구분명': '제정', '자치법규상세링크': ''}
+        body = '<LawService><자치법규기본정보><자치법규명>청주시 빈 조례</자치법규명><담당부서명>예산과</담당부서명></자치법규기본정보><조문></조문><부칙></부칙></LawService>'.encode()
+        with self.assertRaises(sync.EmptyBody):
+            sync.to_markdown(body, meta)
+        md = sync.stub_markdown(meta, sync.base_info(body), '본문 없음')
+        self.assertIn('body_unavailable: true', md)
+        self.assertIn('담당부서명: "예산과"', md)
+        self.assertGreater(len(md), 100)
+
     def test_markdown(self):
         meta = {'자치법규ID': 'A1', '자치법규일련번호': '100', '자치법규명': '청주시 테스트 조례', '자치법규종류': '조례',
                 '지자체기관명': '충청북도 청주시', '공포일자': '20250101', '시행일자': '20250101', '제개정구분명': '일부개정',
