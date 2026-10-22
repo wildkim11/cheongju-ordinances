@@ -333,7 +333,23 @@ def sync_laws(oc, mode):
         return [], []
     idx = {r['id']: r for r in jload('indexes/laws.json', [])}
     new, errors, missing = [], [], []
+    # 불필요한 반복 호출을 줄여요: 이미 받은 법령은 7일마다, 못 찾은 이름은 30일마다만 다시 확인해요.
+    today = datetime.date.today()
+    def days_ago(ts):
+        try:
+            return (today - datetime.date.fromisoformat(str(ts)[:10])).days
+        except ValueError:
+            return 9999
+    by_name = {r.get('name'): r for r in idx.values()}
+    miss_cache = jload('indexes/laws_missing.json', {})
     for n, name in enumerate(names, 1):
+        if mode != 'full':
+            r0 = by_name.get(name)
+            if r0 and os.path.exists(os.path.join(ROOT, r0['path'])) and days_ago(r0.get('checked')) < 7:
+                continue
+            if name in miss_cache and days_ago(miss_cache[name]) < 30:
+                missing.append(name)
+                continue
         if (time.time() - T0) / 60 > BUDGET_MIN + 10:
             print('[법령] 시간 한도라 여기까지 저장해요. 다음 실행이 이어받아요.', flush=True)
             break
@@ -343,6 +359,7 @@ def sync_laws(oc, mode):
             hit = [r for r in rows if norm_name(r['법령명한글']) == norm_name(name) and r['현행연혁코드'] in ('현행', '')]
             if not hit:
                 missing.append(name)
+                miss_cache[name] = today.isoformat()
                 print('[법령] 이름이 같은 현행 법령을 못 찾았어요:', name, flush=True)
                 continue
             m = sorted(hit, key=lambda r: r['시행일자'])[-1]
@@ -369,6 +386,7 @@ def sync_laws(oc, mode):
             errors.append('%s: %s' % (name, e))
             print('[법령] 오류', errors[-1], flush=True)
     jsave('indexes/laws.json', sorted(idx.values(), key=lambda r: r['id']))
+    jsave('indexes/laws_missing.json', {k: v for k, v in miss_cache.items() if k in names})
     print('[법령] 새로·개정 %d · 못 찾음 %d · 오류 %d' % (len(new), len(missing), len(errors)))
     return missing, errors
 
