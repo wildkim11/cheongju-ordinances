@@ -64,7 +64,7 @@ def fetch(path, params, oc, tries=4, timeout=30):
 
 
 def parse_list(data):
-    root = ET.fromstring(data)
+    root = ET.fromstring(fix_xml(data))
     total = int((root.findtext('totalCnt') or '0').strip() or 0)
     rows = []
     for e in root.iter('law'):
@@ -148,7 +148,7 @@ def render_articles(jos):
 
 def base_info(data):
     # 자치법규기본정보 안의 짧은 항목(담당부서명·전화번호·분야 등)을 이름 그대로 전부 담아요.
-    root = ET.fromstring(data)
+    root = ET.fromstring(fix_xml(data))
     base = root.find('자치법규기본정보')
     out = {}
     if base is not None:
@@ -160,7 +160,7 @@ def base_info(data):
 
 
 def to_markdown(data, meta):
-    root = ET.fromstring(data)
+    root = ET.fromstring(fix_xml(data))
     base = root.find('자치법규기본정보')
     if base is None:
         raise ApiError('본문 응답에 자치법규기본정보가 없어요: ' + meta.get('자치법규명', ''))
@@ -215,7 +215,14 @@ def scrub(data, oc):
     data = re.sub(r'(?i)([?&;]|&amp;)OC=[^&<"\s]*', r'\1OC=***', data)
     if oc:
         data = data.replace(oc, '***')
-    return data
+    return data.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def fix_xml(data):
+    # 정의되지 않은 &엔티티; 때문에 XML이 깨지는 응답을 고쳐요.
+    if isinstance(data, bytes):
+        data = data.decode('utf-8', 'ignore')
+    return re.sub(r'&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)', '&amp;', data)
 
 
 def safe(name):
@@ -270,7 +277,7 @@ LAW_LIST_FIELDS = ('법령일련번호', '현행연혁코드', '법령명한글'
 
 
 def parse_law_list(data):
-    root = ET.fromstring(data)
+    root = ET.fromstring(fix_xml(data))
     return [{k: (e.findtext(k) or '').strip() for k in LAW_LIST_FIELDS} for e in root.iter('law')]
 
 
@@ -283,7 +290,7 @@ def law_source_url(meta):
 
 
 def law_markdown(data, meta):
-    root = ET.fromstring(data)
+    root = ET.fromstring(fix_xml(data))
     fill_meta(meta, root)
     base = root.find('기본정보')
     info = {}
@@ -627,6 +634,10 @@ def sync_laws(oc, mode):
         except (ApiError, ET.ParseError) as e:
             errors.append('%s: %s' % (name, e))
             print('[법령] 오류', errors[-1], flush=True)
+    for r in idx.values():  # 저장 전에 파일 내용과 해시를 맞춰요(validate와 같은 방식으로 읽어요)
+        fp = os.path.join(ROOT, r['path'])
+        if os.path.exists(fp):
+            r['sha256'] = sha(open(fp, encoding='utf-8').read())
     jsave('indexes/laws.json', sorted(idx.values(), key=lambda r: r['id']))
     jsave('indexes/laws_missing.json', {k: v for k, v in miss_cache.items() if k in names})
     jsave('indexes/laws_renamed.json', {k: v for k, v in rn_cache.items() if k in names})
