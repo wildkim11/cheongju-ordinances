@@ -39,15 +39,15 @@ def now():
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec='seconds')
 
 
-def fetch(path, params, oc):
+def fetch(path, params, oc, tries=4, timeout=30):
     q = dict(params)
     q['OC'] = oc
     url = API + path + '?' + urllib.parse.urlencode(q)
     last = None
-    for i in range(4):
+    for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={'User-Agent': UA})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = r.read()
             head = data[:600].decode('utf-8', 'ignore')
             if '사용자 정보 검증에 실패' in head or '사용자정보 검증' in head:
@@ -321,8 +321,11 @@ def law_rel_path(meta):
 
 
 def _rows_by_name(name, oc, nw):
-    return parse_law_list(fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': name,
-                                                  'search': '1', 'display': '100', 'nw': nw}, oc))
+    t = time.time()
+    rows = parse_law_list(fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': name,
+                                                  'search': '1', 'display': '100', 'nw': nw}, oc, tries=2, timeout=15))
+    print('[개명]   검색 nw=%s: %d건 (%.1f초)' % (nw, len(rows), time.time() - t), flush=True)
+    return rows
 
 
 def resolve_renamed(name, oc, idx):
@@ -331,11 +334,13 @@ def resolve_renamed(name, oc, idx):
     2) 같은 법령ID의 현행 법령(이름이 바뀌었을 수 있어요)을 찾아요.
     옛 이름 이름으로 마지막 연혁본(조례가 인용한 조문 번호 그대로)을 laws/연혁/ 에 저장하고,
     현행 법령도 함께 저장해요. 결과: dict(result=renamed|repealed|none, ...)."""
+    print('[개명] 연혁 확인 중:', name, flush=True)
     hist = []
     for nw in ('1', '1,2,3'):
         try:
             hist = [r for r in _rows_by_name(name, oc, nw) if norm_name(r['법령명한글']) == norm_name(name)]
-        except (ApiError, ET.ParseError):
+        except (ApiError, ET.ParseError) as e:
+            print('[개명]   검색 실패 nw=%s: %s' % (nw, e), flush=True)
             hist = []
         if hist:
             break
@@ -347,7 +352,7 @@ def resolve_renamed(name, oc, idx):
     # 같은 법령ID의 현행 법령 이름 알아내기
     new_name = ''
     try:
-        data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'ID': lid}, oc)
+        data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'ID': lid}, oc, tries=2, timeout=20)
         root = ET.fromstring(data)
         new_name = (root.findtext('기본정보/법령명_한글') or '').strip()
         print('[개명] %s → 법령ID %s의 현행 이름: %s' % (name, lid, new_name or '(없음)'), flush=True)
@@ -428,6 +433,7 @@ def sync_laws(oc, mode):
     miss_cache = jload('indexes/laws_missing.json', {})
     rn_cache = jload('indexes/laws_renamed.json', {})   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
     renamed = []
+    rn_fail = 0
     for n, name in enumerate(names, 1):
         if mode != 'full':
             r0 = by_name.get(name)
