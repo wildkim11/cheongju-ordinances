@@ -537,6 +537,27 @@ def run(mode, limit=None):
                 for r in rows[:8]:
                     print('   |%s|%s|ID=%s|MST=%s|시행=%s|공포=%s|%s|%s' % (r['법령명한글'], r['현행연혁코드'], r['법령ID'], r['법령일련번호'],
                           r['시행일자'], r['공포일자'], r['제개정구분명'], r['법령구분명']), flush=True)
+        for nm in [l.strip() for l in open(pf, encoding='utf-8') if l.strip()][:2]:
+            for tg, nw in (('eflaw', '1'), ('eflaw', '3'), ('lsHstInf', '')):
+                prm = {'target': tg, 'type': 'XML', 'query': nm, 'search': '1', 'display': '30'}
+                if nw:
+                    prm['nw'] = nw
+                try:
+                    raw = fetch('lawSearch.do', prm, oc, tries=2, timeout=20)
+                except ApiError as e:
+                    print('[확인2] %s %s nw=%s 실패: %s' % (nm, tg, nw, e), flush=True)
+                    continue
+                txt = raw.decode('utf-8', 'ignore')
+                try:
+                    rows = parse_law_list(raw)
+                except ET.ParseError:
+                    rows = []
+                print('[확인2] "%s" target=%s nw=%s → 파싱 %d건' % (nm, tg, nw, len(rows)), flush=True)
+                for r in rows[:12]:
+                    print('   |%s|%s|ID=%s|MST=%s|시행=%s|공포=%s|%s' % (r['법령명한글'], r['현행연혁코드'], r['법령ID'], r['법령일련번호'],
+                          r['시행일자'], r['공포일자'], r['제개정구분명']), flush=True)
+                if not rows:
+                    print('   원본:', re.sub(r'\s+', ' ', re.sub(r'(?i)OC=[^&<"\s]*', 'OC=***', txt))[:900], flush=True)
         print('[확인] 끝. probe_laws.txt를 지우고 다시 실행하세요.')
         return 0
     idx = {r['id']: r for r in jload('indexes/ordinances.json', [])}
