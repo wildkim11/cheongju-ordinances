@@ -336,16 +336,18 @@ def resolve_renamed(name, oc, idx):
     현행 법령도 함께 저장해요. 결과: dict(result=renamed|repealed|none, ...)."""
     print('[개명] 연혁 확인 중:', name, flush=True)
     hist = []
+    failed = False
     for nw in ('1', '1,2,3'):
         try:
             hist = [r for r in _rows_by_name(name, oc, nw) if norm_name(r['법령명한글']) == norm_name(name)]
         except (ApiError, ET.ParseError) as e:
             print('[개명]   검색 실패 nw=%s: %s' % (nw, e), flush=True)
+            failed = True
             hist = []
         if hist:
             break
     if not hist:
-        return {'result': 'none'}
+        return {'result': 'error' if failed else 'none'}
     last = sorted(hist, key=lambda r: (r['시행일자'], r['공포일자'], r['법령일련번호']))[-1]
     lid = last['법령ID']
     out = {'result': 'repealed', 'id': lid, 'old_mst': last['법령일련번호'], 'old_effective': last['시행일자']}
@@ -451,6 +453,9 @@ def sync_laws(oc, mode):
                 except (ApiError, ET.ParseError) as e:
                     errors.append('%s(연혁): %s' % (name, e))
                     continue
+                if res['result'] == 'error':
+                    missing.append(name)
+                    continue
                 res['tried'] = today.isoformat()
                 rn_cache[name] = res
                 if res['result'] == 'none':
@@ -470,6 +475,9 @@ def sync_laws(oc, mode):
                 miss_cache[name] = today.isoformat()
                 print('[법령] 이름이 같은 현행 법령을 못 찾았어요. 연혁을 확인해요:', name, flush=True)
                 res = resolve_renamed(name, oc, idx)
+                if res['result'] == 'error':
+                    missing.append(name)
+                    continue
                 res['tried'] = today.isoformat()
                 rn_cache[name] = res
                 if res['result'] == 'none':
@@ -515,6 +523,22 @@ def run(mode, limit=None):
         return 2
     if mode == 'probe':
         return probe(oc)
+    pf = os.path.join(ROOT, 'probe_laws.txt')
+    if os.path.exists(pf):
+        # 확인용: probe_laws.txt에 법령 이름을 한 줄에 하나씩 적고 실행하면 검색 결과 표만 로그에 찍고 끝내요.
+        for nm in [l.strip() for l in open(pf, encoding='utf-8') if l.strip()]:
+            for nw in ('3', '1'):
+                try:
+                    rows = _rows_by_name(nm, oc, nw)
+                except (ApiError, ET.ParseError) as e:
+                    print('[확인] %s nw=%s 실패: %s' % (nm, nw, e), flush=True)
+                    continue
+                print('[확인] "%s" nw=%s → %d건' % (nm, nw, len(rows)), flush=True)
+                for r in rows[:8]:
+                    print('   |%s|%s|ID=%s|MST=%s|시행=%s|공포=%s|%s|%s' % (r['법령명한글'], r['현행연혁코드'], r['법령ID'], r['법령일련번호'],
+                          r['시행일자'], r['공포일자'], r['제개정구분명'], r['법령구분명']), flush=True)
+        print('[확인] 끝. probe_laws.txt를 지우고 다시 실행하세요.')
+        return 0
     idx = {r['id']: r for r in jload('indexes/ordinances.json', [])}
     active_before = [r for r in idx.values() if r.get('status') == 'active']
     items, orgs = collect(oc, limit)
