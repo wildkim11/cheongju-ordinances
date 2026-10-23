@@ -533,6 +533,51 @@ def sync_laws(oc, mode):
     return missing, errors
 
 
+def sync_ordin_aliases(oc, idx):
+    """다른 조례가 옛 이름·다른 이름으로 인용한 청주시 조례·규칙을 현행 이름으로 이어 주는 대응표.
+    저장된 조례 본문에서 「청주시 …」 이름 중 현행 이름에 없는 것을 모아 법제처 조례 검색(옛 이름도 찾아 줘요)으로 물어요.
+    결과는 indexes/ordin_alias.json — 검색이 엉뚱한 조례를 줄 수도 있으니 사람이 보고 쓰세요."""
+    cache = jload('indexes/ordin_alias.json', {})
+    cur = {norm_name(r['name']): r for r in idx.values() if r.get('status') == 'active'}
+    found = {}
+    for r in idx.values():
+        if r.get('status') != 'active' or not os.path.exists(os.path.join(ROOT, r['path'])):
+            continue
+        txt = open(os.path.join(ROOT, r['path']), encoding='utf-8').read()
+        for m in re.finditer(r'「(청주시[^」\n]{2,60}(?:조례|규칙))」', txt):
+            nm = m.group(1)
+            if norm_name(nm) not in cur:
+                found[nm] = found.get(nm, 0) + 1
+    today = datetime.date.today()
+    def days_ago(ts):
+        try:
+            return (today - datetime.date.fromisoformat(str(ts)[:10])).days
+        except ValueError:
+            return 9999
+    n_new = 0
+    for nm in sorted(found, key=lambda k: -found[k]):
+        c = cache.get(nm)
+        if c and days_ago(c.get('tried')) < 30:
+            continue
+        if (time.time() - T0) / 60 > BUDGET_MIN + 20:
+            print('[조례개명] 시간 한도라 여기까지 저장해요.', flush=True)
+            break
+        try:
+            raw = fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': nm, 'search': '1', 'display': '10', 'nw': '3'},
+                        oc, tries=2, timeout=20)
+            tot, rows = parse_list(raw)
+        except (ApiError, ET.ParseError) as e:
+            print('[조례개명] 실패', nm, e, flush=True)
+            continue
+        rows = [x for x in rows if x['지자체기관명'].startswith(ORG_PREFIX)]
+        res = {'count': found[nm], 'tried': today.isoformat(), 'hits': [{'name': x['자치법규명'], 'id': x['자치법규ID'], 'kind': x['자치법규종류']} for x in rows[:5]]}
+        cache[nm] = res
+        n_new += 1
+        print('[조례개명] %s (%d회) → %s' % (nm, found[nm], ' / '.join(h['name'] for h in res['hits']) or '(없음)'), flush=True)
+    jsave('indexes/ordin_alias.json', {k: v for k, v in cache.items() if k in found})
+    print('[조례개명] 현행에 없는 인용 이름 %d개 · 이번에 확인 %d개' % (len(found), n_new))
+
+
 def run(mode, limit=None):
     oc = os.environ.get('LAW_OC', '').strip()
     if not oc:
@@ -570,27 +615,29 @@ def run(mode, limit=None):
                 for r in rows[:8]:
                     print('   |%s|%s|ID=%s|MST=%s|시행=%s|공포=%s|%s|%s' % (r['법령명한글'], r['현행연혁코드'], r['법령ID'], r['법령일련번호'],
                           r['시행일자'], r['공포일자'], r['제개정구분명'], r['법령구분명']), flush=True)
-        for nm in [l.strip() for l in open(pf, encoding='utf-8') if l.strip()][:2]:
-            for tg, nw in (('eflaw', '1'), ('eflaw', '3'), ('lsHstInf', '')):
-                prm = {'target': tg, 'type': 'XML', 'query': nm, 'search': '1', 'display': '30'}
+        for nm in [l.strip() for l in open(pf, encoding='utf-8') if l.strip()]:
+            variants = [('eflaw', '1', nm), ('eflaw', '3', nm), ('eflaw', '3', re.sub(r'\s+', '', nm))]
+            if re.search(r'(훈령|규정|예규|고시)$', nm):
+                variants.append(('admrul', '', nm))
+            for tg, nw, q in variants:
+                prm = {'target': tg, 'type': 'XML', 'query': q, 'search': '1', 'display': '10'}
                 if nw:
                     prm['nw'] = nw
                 try:
                     raw = fetch('lawSearch.do', prm, oc, tries=2, timeout=20)
                 except ApiError as e:
-                    print('[확인2] %s %s nw=%s 실패: %s' % (nm, tg, nw, e), flush=True)
+                    print('[확인2] %s %s nw=%s 실패: %s' % (q, tg, nw, e), flush=True)
                     continue
                 txt = raw.decode('utf-8', 'ignore')
                 try:
-                    rows = parse_law_list(raw)
+                    rows = parse_law_list(raw) if tg != 'admrul' else []
                 except ET.ParseError:
                     rows = []
-                print('[확인2] "%s" target=%s nw=%s → 파싱 %d건' % (nm, tg, nw, len(rows)), flush=True)
-                for r in rows[:12]:
-                    print('   |%s|%s|ID=%s|MST=%s|시행=%s|공포=%s|%s' % (r['법령명한글'], r['현행연혁코드'], r['법령ID'], r['법령일련번호'],
-                          r['시행일자'], r['공포일자'], r['제개정구분명']), flush=True)
-                if not rows:
-                    print('   원본:', re.sub(r'\s+', ' ', re.sub(r'(?i)OC=[^&<"\s]*', 'OC=***', txt))[:900], flush=True)
+                print('[확인2] "%s" target=%s nw=%s → %d건' % (q, tg, nw, len(rows)), flush=True)
+                for r in rows[:6]:
+                    print('   |%s|%s|ID=%s|MST=%s|시행=%s|%s' % (r['법령명한글'], r['현행연혁코드'], r['법령ID'], r['법령일련번호'], r['시행일자'], r['제개정구분명']), flush=True)
+                if tg == 'admrul':
+                    print('   원본:', re.sub(r'\s+', ' ', re.sub(r'(?i)OC=[^&<"\s]*', 'OC=***', txt))[:700], flush=True)
         print('[확인] 끝. probe_laws.txt를 지우고 다시 실행하세요.')
         return 0
     idx = {r['id']: r for r in jload('indexes/ordinances.json', [])}
@@ -655,6 +702,10 @@ def run(mode, limit=None):
                   'revision': it['제개정구분명'], 'path': path, 'sha256': digest, 'status': 'active',
                   'source': source_url(it), 'info': info, 'checked': now()}
     lmiss, lerr = sync_laws(oc, mode)
+    try:
+        sync_ordin_aliases(oc, idx)
+    except (ApiError, ET.ParseError, OSError) as e:
+        print('[조례개명] 오류(무시):', e, flush=True)
     errors += lerr
     seen = {it['자치법규ID'] for it in items}
     gone = []
