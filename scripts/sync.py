@@ -284,6 +284,7 @@ def law_source_url(meta):
 
 def law_markdown(data, meta):
     root = ET.fromstring(data)
+    fill_meta(meta, root)
     base = root.find('기본정보')
     info = {}
     if base is not None:
@@ -320,94 +321,108 @@ def law_rel_path(meta):
     return 'laws/%s/%s_%s.md' % (safe(meta['법령구분명'] or '기타'), meta['법령ID'], safe(meta['법령명한글']))
 
 
-def _rows_by_name(name, oc, nw):
+def _rows_by_name(name, oc, nw, target='law', display='100'):
     t = time.time()
-    rows = parse_law_list(fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': name,
-                                                  'search': '1', 'display': '100', 'nw': nw}, oc, tries=2, timeout=15))
-    print('[개명]   검색 nw=%s: %d건 (%.1f초)' % (nw, len(rows), time.time() - t), flush=True)
+    rows = parse_law_list(fetch('lawSearch.do', {'target': target, 'type': 'XML', 'query': name,
+                                                  'search': '1', 'display': display, 'nw': nw}, oc, tries=2, timeout=20))
+    print('[개명]   검색 %s nw=%s: %d건 (%.1f초)' % (target, nw, len(rows), time.time() - t), flush=True)
     return rows
 
 
+def fill_meta(meta, root):
+    """시행일 법령(eflaw) 목록에는 없는 값(법 종류·소관부처 등)을 본문 응답에서 채워요."""
+    b = root.find('기본정보')
+    if b is None:
+        return
+    for k, tags in (('법령구분명', ('법종류',)), ('소관부처명', ('소관부처',)), ('제개정구분명', ('제개정구분',)),
+                    ('공포번호', ('공포번호',)), ('공포일자', ('공포일자',)), ('시행일자', ('시행일자',))):
+        if not meta.get(k):
+            for t in tags:
+                v = (b.findtext(t) or '').strip()
+                if v:
+                    meta[k] = v
+                    break
+
+
 def resolve_renamed(name, oc, idx):
-    """현행 목록에 없는 법령명을 연혁 목록에서 찾아요.
-    1) 연혁 검색으로 옛 이름의 법령ID와 마지막 연혁본을 찾고,
-    2) 같은 법령ID의 현행 법령(이름이 바뀌었을 수 있어요)을 찾아요.
-    옛 이름 이름으로 마지막 연혁본(조례가 인용한 조문 번호 그대로)을 laws/연혁/ 에 저장하고,
-    현행 법령도 함께 저장해요. 결과: dict(result=renamed|repealed|none, ...)."""
+    """현행 목록(law)에서 못 찾은 이름을 시행일 법령(eflaw) 목록에서 다시 찾아요.
+    - eflaw nw=1은 옛 이름의 연혁 판을 이름 그대로 돌려줘요(법령ID 공통). 마지막 연혁 판을 옛 이름으로 저장해요
+      (조례가 인용한 조문 번호 그대로).
+    - eflaw nw=3은 같은 법령ID의 현행 판을 돌려줘요. 이름이 다르면 이름이 바뀐 거예요. 현행 판도 같이 저장해요.
+    결과: result = renamed | current(이름 그대로 현행인데 처음 검색에서 놓친 경우) | repealed | none | error."""
     print('[개명] 연혁 확인 중:', name, flush=True)
-    hist = []
     failed = False
-    for nw in ('1', '1,2,3'):
-        try:
-            hist = [r for r in _rows_by_name(name, oc, nw) if norm_name(r['법령명한글']) == norm_name(name)]
-        except (ApiError, ET.ParseError) as e:
-            print('[개명]   검색 실패 nw=%s: %s' % (nw, e), flush=True)
-            failed = True
-            hist = []
-        if hist:
-            break
-    if not hist:
-        return {'result': 'error' if failed else 'none'}
-    last = sorted(hist, key=lambda r: (r['시행일자'], r['공포일자'], r['법령일련번호']))[-1]
-    lid = last['법령ID']
-    out = {'result': 'repealed', 'id': lid, 'old_mst': last['법령일련번호'], 'old_effective': last['시행일자']}
-    # 같은 법령ID의 현행 법령 이름 알아내기
-    new_name = ''
+    hist, cur_rows = [], []
     try:
-        data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'ID': lid}, oc, tries=2, timeout=20)
-        root = ET.fromstring(data)
-        new_name = (root.findtext('기본정보/법령명_한글') or '').strip()
-        print('[개명] %s → 법령ID %s의 현행 이름: %s' % (name, lid, new_name or '(없음)'), flush=True)
+        hist = [r for r in _rows_by_name(name, oc, '1', 'eflaw') if norm_name(r['법령명한글']) == norm_name(name)]
     except (ApiError, ET.ParseError) as e:
-        print('[개명] 현행 조회 실패:', name, e, flush=True)
+        print('[개명]   연혁 검색 실패: %s' % e, flush=True)
+        failed = True
+    try:
+        cur_rows = _rows_by_name(name, oc, '3', 'eflaw')
+    except (ApiError, ET.ParseError) as e:
+        print('[개명]   현행 검색 실패: %s' % e, flush=True)
+        failed = True
+    same_cur = [r for r in cur_rows if norm_name(r['법령명한글']) == norm_name(name)]
+    if not hist and not same_cur:
+        return {'result': 'error' if failed else 'none'}
+    lid = (sorted(hist, key=lambda r: (r['시행일자'], r['공포일자'], r['법령일련번호']))[-1] if hist else same_cur[0])['법령ID']
     cur_meta = None
-    if new_name and norm_name(new_name) != norm_name(name):
+    cands = [r for r in cur_rows if r['법령ID'] == lid and r['현행연혁코드'] in ('현행', '')]
+    if cands:
+        cur_meta = sorted(cands, key=lambda r: r['시행일자'])[-1]
+    out = {'id': lid}
+    if cur_meta and norm_name(cur_meta['법령명한글']) == norm_name(name):
+        out['result'] = 'current'
+    elif cur_meta:
         out['result'] = 'renamed'
-        out['new_name'] = new_name
-        try:
-            rows = _rows_by_name(new_name, oc, '3')
-            cands = [r for r in rows if r['법령ID'] == lid] or [r for r in rows if norm_name(r['법령명한글']) == norm_name(new_name)]
-            if cands:
-                cur_meta = sorted(cands, key=lambda r: r['시행일자'])[-1]
-        except (ApiError, ET.ParseError):
-            pass
-    # 마지막 연혁본 저장(옛 이름으로, 조례가 인용한 조문 번호 그대로)
-    md, info = law_markdown(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': last['법령일련번호']}, oc), last)
-    if out['result'] == 'renamed':
-        md = md.replace('\n---\n', '\nrenamed_to: %s\nhistoric: true\n---\n' % json.dumps(new_name, ensure_ascii=False), 1)
+        out['new_name'] = cur_meta['법령명한글']
     else:
-        md = md.replace('\n---\n', '\nhistoric: true\n---\n', 1)
-    md = scrub(md, oc)
-    path = 'laws/연혁/%s_%s_%s.md' % (lid, last['법령일련번호'], safe(name))
-    p = os.path.join(ROOT, path)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    open(p, 'w', encoding='utf-8').write(md)
-    key = 'H' + last['법령일련번호']
-    ent = {'id': key, 'name': name, 'kind': last['법령구분명'], 'ministry': last['소관부처명'], 'mst': last['법령일련번호'],
-           'promulgated': last['공포일자'], 'promulgation_no': last['공포번호'], 'effective': last['시행일자'],
-           'revision': last['제개정구분명'], 'path': path, 'sha256': sha(md), 'source': law_source_url(last), 'info': info,
-           'checked': now(), 'historic': True}
-    if out['result'] == 'renamed':
-        ent['renamed_to'] = new_name
-    idx[key] = ent
-    # 현행 법령도 저장(이미 있으면 건너뜀)
-    if cur_meta and cur_meta['법령ID'] not in idx:
-        try:
-            md2, info2 = law_markdown(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': cur_meta['법령일련번호']}, oc), cur_meta)
-            md2 = scrub(md2, oc)
-            path2 = law_rel_path(cur_meta)
-            p2 = os.path.join(ROOT, path2)
-            os.makedirs(os.path.dirname(p2), exist_ok=True)
-            open(p2, 'w', encoding='utf-8').write(md2)
-            idx[cur_meta['법령ID']] = {'id': cur_meta['법령ID'], 'name': cur_meta['법령명한글'], 'kind': cur_meta['법령구분명'],
-                'ministry': cur_meta['소관부처명'], 'mst': cur_meta['법령일련번호'], 'promulgated': cur_meta['공포일자'],
-                'promulgation_no': cur_meta['공포번호'], 'effective': cur_meta['시행일자'], 'revision': cur_meta['제개정구분명'],
-                'path': path2, 'sha256': sha(md2), 'source': law_source_url(cur_meta), 'info': info2, 'checked': now(),
-                'replaces': name}
-            out['new_saved'] = True
-        except (ApiError, ET.ParseError) as e:
-            print('[개명] 현행 본문 저장 실패:', new_name, e, flush=True)
-    out['path'] = path
+        out['result'] = 'repealed'
+    print('[개명]   판정: %s%s' % (out['result'], (' → ' + out['new_name']) if out.get('new_name') else ''), flush=True)
+
+    def save_current(meta, note):
+        data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': meta['법령일련번호']}, oc, tries=2, timeout=30)
+        md, info = law_markdown(data, meta)
+        md = scrub(md, oc)
+        pth = law_rel_path(meta)
+        p = os.path.join(ROOT, pth)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, 'w', encoding='utf-8').write(md)
+        ent = {'id': meta['법령ID'], 'name': meta['법령명한글'], 'kind': meta['법령구분명'], 'ministry': meta['소관부처명'],
+               'mst': meta['법령일련번호'], 'promulgated': meta['공포일자'], 'promulgation_no': meta['공포번호'],
+               'effective': meta['시행일자'], 'revision': meta['제개정구분명'], 'path': pth, 'sha256': sha(md),
+               'source': law_source_url(meta), 'info': info, 'checked': now()}
+        ent.update(note)
+        idx[meta['법령ID']] = ent
+
+    try:
+        if out['result'] in ('current', 'renamed') and cur_meta:
+            if out['result'] == 'renamed' and cur_meta['법령ID'] in idx:
+                pass  # 이미 현행 판을 받아 둠
+            else:
+                save_current(cur_meta, {'replaces': name} if out['result'] == 'renamed' else {})
+        if out['result'] in ('renamed', 'repealed') and hist:
+            last = sorted(hist, key=lambda r: (r['시행일자'], r['공포일자'], r['법령일련번호']))[-1]
+            data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': last['법령일련번호']}, oc, tries=2, timeout=30)
+            md, info = law_markdown(data, last)
+            extra = 'historic: true\n' + ('renamed_to: %s\n' % json.dumps(out['new_name'], ensure_ascii=False) if out.get('new_name') else '')
+            md = scrub(md.replace('\n---\n', '\n' + extra + '---\n', 1), oc)
+            pth = 'laws/연혁/%s_%s_%s.md' % (lid, last['법령일련번호'], safe(name))
+            p = os.path.join(ROOT, pth)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, 'w', encoding='utf-8').write(md)
+            ent = {'id': 'H' + last['법령일련번호'], 'name': name, 'kind': last['법령구분명'], 'ministry': last['소관부처명'],
+                   'mst': last['법령일련번호'], 'promulgated': last['공포일자'], 'promulgation_no': last['공포번호'],
+                   'effective': last['시행일자'], 'revision': last['제개정구분명'], 'path': pth, 'sha256': sha(md),
+                   'source': law_source_url(last), 'info': info, 'checked': now(), 'historic': True}
+            if out.get('new_name'):
+                ent['renamed_to'] = out['new_name']
+            idx[ent['id']] = ent
+            out['path'] = pth
+    except (ApiError, ET.ParseError) as e:
+        print('[개명]   본문 저장 실패:', name, e, flush=True)
+        return {'result': 'error'}
     return out
 
 
@@ -433,7 +448,7 @@ def sync_laws(oc, mode):
             return 9999
     by_name = {r.get('name'): r for r in idx.values()}
     miss_cache = jload('indexes/laws_missing.json', {})
-    rn_cache = jload('indexes/laws_renamed.json', {})   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
+    rn_cache = {k: v for k, v in jload('indexes/laws_renamed.json', {}).items() if v.get('v') == 2}   # 옛 방식(v1)으로 확인한 결과는 버려요   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
     renamed = []
     rn_fail = 0
     for n, name in enumerate(names, 1):
@@ -457,6 +472,7 @@ def sync_laws(oc, mode):
                     missing.append(name)
                     continue
                 res['tried'] = today.isoformat()
+                res['v'] = 2
                 rn_cache[name] = res
                 if res['result'] == 'none':
                     missing.append(name)
@@ -479,6 +495,7 @@ def sync_laws(oc, mode):
                     missing.append(name)
                     continue
                 res['tried'] = today.isoformat()
+                res['v'] = 2
                 rn_cache[name] = res
                 if res['result'] == 'none':
                     missing.append(name)
@@ -523,6 +540,22 @@ def run(mode, limit=None):
         return 2
     if mode == 'probe':
         return probe(oc)
+    po = os.path.join(ROOT, 'probe_ordins.txt')
+    if os.path.exists(po):
+        # 확인용(실행은 계속해요): 옛 이름의 조례·규칙이 연혁 검색에 나오는지 로그에 찍어요.
+        for nm in [l.strip() for l in open(po, encoding='utf-8') if l.strip()]:
+            for nw in ('3', '1'):
+                try:
+                    raw = fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': nm, 'search': '1',
+                                                 'display': '30', 'nw': nw}, oc, tries=2, timeout=20)
+                    tot, rows = parse_list(raw)
+                except (ApiError, ET.ParseError) as e:
+                    print('[조례확인] %s nw=%s 실패: %s' % (nm, nw, e), flush=True)
+                    continue
+                print('[조례확인] "%s" nw=%s → 전체 %s건' % (nm, nw, tot), flush=True)
+                for r in rows[:10]:
+                    print('   |%s|%s|%s|ID=%s|MST=%s|시행=%s|공포=%s|%s' % (r['자치법규명'], r['지자체기관명'], r['자치법규종류'],
+                          r['자치법규ID'], r['자치법규일련번호'], r['시행일자'], r['공포일자'], r['제개정구분명']), flush=True)
     pf = os.path.join(ROOT, 'probe_laws.txt')
     if os.path.exists(pf):
         # 확인용: probe_laws.txt에 법령 이름을 한 줄에 하나씩 적고 실행하면 검색 결과 표만 로그에 찍고 끝내요.
