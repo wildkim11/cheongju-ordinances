@@ -7,7 +7,7 @@
   LAW_OC=<인증키> python3 scripts/sync.py --mode probe         # 응답 모양만 확인(probe/ 폴더에 원본 저장)
 표준 라이브러리만 씁니다. 목록이 비었거나 크게 줄면 아무것도 바꾸지 않고 실패합니다.
 """
-import argparse, datetime, hashlib, json, os, re, sys, time
+import argparse, datetime, difflib, hashlib, json, os, re, sys, time
 import urllib.parse, urllib.request, urllib.error
 import xml.etree.ElementTree as ET
 
@@ -344,6 +344,81 @@ def fill_meta(meta, root):
                     break
 
 
+_LAWQ = {}
+
+
+def _law_rows(q, oc):
+    if q not in _LAWQ:
+        _LAWQ[q] = [r for r in _rows_by_name(q, oc, '3', 'law') if r['현행연혁코드'] in ('현행', '')]
+    return _LAWQ[q]
+
+
+def _ratio(a, b):
+    return difflib.SequenceMatcher(None, norm_name(a), norm_name(b)).ratio()
+
+
+def alias_match(name, oc):
+    """이름이 법제처 이름과 조금 다르게(약칭·띄어쓰기·「등」 추가·오탈자) 인용된 법령을 찾아요.
+    기본 법령 이름의 법령약칭이 같거나 이름이 90% 이상 비슷해야 인정해요. 시행령·시행규칙은 기본 법령 이름 + 접미사로 짝지어요."""
+    suf = ''
+    for sx in (' 시행규칙', ' 시행령'):
+        if name.endswith(sx):
+            suf, base = sx, name[:-len(sx)]
+            break
+    else:
+        base = name
+    rows = _law_rows(base, oc)
+    best = None
+    for r in rows:
+        nm = r['법령명한글']
+        if re.search(r'\s시행(?:령|규칙)$', nm):
+            continue
+        if norm_name(r.get('법령약칭명', '')) == norm_name(base):
+            best = (1.0, r, 'abbr')
+            break
+        sc = _ratio(nm, base)
+        if sc >= 0.9 and (not best or sc > best[0]):
+            best = (sc, r, 'similar')
+    if not best:
+        return None
+    if not suf:
+        return best[1], best[2]
+    want = norm_name(best[1]['법령명한글'] + suf)
+    for r in rows:
+        if norm_name(r['법령명한글']) == want:
+            return r, best[2]
+    return None
+
+
+def add_alias(idx, lid, old_name):
+    ex = idx.get(lid)
+    if ex and norm_name(ex['name']) != norm_name(old_name):
+        a = set(ex.get('aliases', []))
+        a.add(old_name)
+        ex['aliases'] = sorted(a)
+
+
+def _save_found(out, meta, old_name, oc, idx):
+    data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': meta['법령일련번호']}, oc, tries=2, timeout=30)
+    md, info = law_markdown(data, meta)
+    md = scrub(md, oc)
+    pth = law_rel_path(meta)
+    p = os.path.join(ROOT, pth)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, 'w', encoding='utf-8').write(md)
+    ent = {'id': meta['법령ID'], 'name': meta['법령명한글'], 'kind': meta['법령구분명'], 'ministry': meta['소관부처명'],
+           'mst': meta['법령일련번호'], 'promulgated': meta['공포일자'], 'promulgation_no': meta['공포번호'],
+           'effective': meta['시행일자'], 'revision': meta['제개정구분명'], 'path': pth, 'sha256': sha(md),
+           'source': law_source_url(meta), 'info': info, 'checked': now()}
+    if norm_name(meta['법령명한글']) != norm_name(old_name):
+        ent['replaces'] = old_name
+    if meta['법령ID'] not in idx:
+        idx[meta['법령ID']] = ent
+    add_alias(idx, meta['법령ID'], old_name)
+    out['path'] = pth
+    return out
+
+
 def resolve_renamed(name, oc, idx):
     """현행 목록(law)에서 못 찾은 이름을 시행일 법령(eflaw) 목록에서 다시 찾아요.
     - eflaw nw=1은 옛 이름의 연혁 판을 이름 그대로 돌려줘요(법령ID 공통). 마지막 연혁 판을 옛 이름으로 저장해요
@@ -365,7 +440,31 @@ def resolve_renamed(name, oc, idx):
         failed = True
     same_cur = [r for r in cur_rows if norm_name(r['법령명한글']) == norm_name(name)]
     if not hist and not same_cur:
-        return {'result': 'error' if failed else 'none'}
+        if failed:
+            return {'result': 'error'}
+        # 1) 「X 시행령/시행규칙」은 기본 법령 이름으로 검색하면 나오는 경우가 있어요(이름이 정확히 같을 때만 인정)
+        # 2) 약칭·띄어쓰기·「등」 추가 등으로 조금 다르게 인용된 법령
+        try:
+            alt = None
+            for sx in (' 시행규칙', ' 시행령'):
+                if name.endswith(sx):
+                    alt = [r for r in _law_rows(name[:-len(sx)], oc) if norm_name(r['법령명한글']) == norm_name(name)]
+                    break
+            if alt:
+                m0 = alt[0]
+                out = {'id': m0['법령ID'], 'result': 'current', 'via': 'base-search'}
+                print('[개명]   기본 이름 검색으로 현행 법령을 찾음', flush=True)
+                return _save_found(out, m0, name, oc, idx)
+            am = alias_match(name, oc)
+            if am:
+                m0, how = am
+                out = {'id': m0['법령ID'], 'result': 'renamed', 'new_name': m0['법령명한글'], 'via': how}
+                print('[개명]   판정: renamed(%s) → %s' % (how, m0['법령명한글']), flush=True)
+                return _save_found(out, m0, name, oc, idx)
+        except (ApiError, ET.ParseError) as e:
+            print('[개명]   대체 검색 실패:', e, flush=True)
+            return {'result': 'error'}
+        return {'result': 'none'}
     lid = (sorted(hist, key=lambda r: (r['시행일자'], r['공포일자'], r['법령일련번호']))[-1] if hist else same_cur[0])['법령ID']
     cur_meta = None
     cands = [r for r in cur_rows if r['법령ID'] == lid and r['현행연혁코드'] in ('현행', '')]
@@ -423,6 +522,8 @@ def resolve_renamed(name, oc, idx):
     except (ApiError, ET.ParseError) as e:
         print('[개명]   본문 저장 실패:', name, e, flush=True)
         return {'result': 'error'}
+    if out['result'] == 'renamed':
+        add_alias(idx, lid, name)
     return out
 
 
@@ -448,7 +549,7 @@ def sync_laws(oc, mode):
             return 9999
     by_name = {r.get('name'): r for r in idx.values()}
     miss_cache = jload('indexes/laws_missing.json', {})
-    rn_cache = {k: v for k, v in jload('indexes/laws_renamed.json', {}).items() if v.get('v') == 2}   # 옛 방식(v1)으로 확인한 결과는 버려요   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
+    rn_cache = {k: v for k, v in jload('indexes/laws_renamed.json', {}).items() if v.get('v') == 3}   # 옛 방식(v1)으로 확인한 결과는 버려요   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
     renamed = []
     rn_fail = 0
     for n, name in enumerate(names, 1):
@@ -472,7 +573,7 @@ def sync_laws(oc, mode):
                     missing.append(name)
                     continue
                 res['tried'] = today.isoformat()
-                res['v'] = 2
+                res['v'] = 3
                 rn_cache[name] = res
                 if res['result'] == 'none':
                     missing.append(name)
@@ -495,7 +596,7 @@ def sync_laws(oc, mode):
                     missing.append(name)
                     continue
                 res['tried'] = today.isoformat()
-                res['v'] = 2
+                res['v'] = 3
                 rn_cache[name] = res
                 if res['result'] == 'none':
                     missing.append(name)
