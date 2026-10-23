@@ -320,6 +320,90 @@ def law_rel_path(meta):
     return 'laws/%s/%s_%s.md' % (safe(meta['법령구분명'] or '기타'), meta['법령ID'], safe(meta['법령명한글']))
 
 
+def _rows_by_name(name, oc, nw):
+    return parse_law_list(fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'query': name,
+                                                  'search': '1', 'display': '100', 'nw': nw}, oc))
+
+
+def resolve_renamed(name, oc, idx):
+    """현행 목록에 없는 법령명을 연혁 목록에서 찾아요.
+    1) 연혁 검색으로 옛 이름의 법령ID와 마지막 연혁본을 찾고,
+    2) 같은 법령ID의 현행 법령(이름이 바뀌었을 수 있어요)을 찾아요.
+    옛 이름 이름으로 마지막 연혁본(조례가 인용한 조문 번호 그대로)을 laws/연혁/ 에 저장하고,
+    현행 법령도 함께 저장해요. 결과: dict(result=renamed|repealed|none, ...)."""
+    hist = []
+    for nw in ('1', '1,2,3'):
+        try:
+            hist = [r for r in _rows_by_name(name, oc, nw) if norm_name(r['법령명한글']) == norm_name(name)]
+        except (ApiError, ET.ParseError):
+            hist = []
+        if hist:
+            break
+    if not hist:
+        return {'result': 'none'}
+    last = sorted(hist, key=lambda r: (r['시행일자'], r['공포일자'], r['법령일련번호']))[-1]
+    lid = last['법령ID']
+    out = {'result': 'repealed', 'id': lid, 'old_mst': last['법령일련번호'], 'old_effective': last['시행일자']}
+    # 같은 법령ID의 현행 법령 이름 알아내기
+    new_name = ''
+    try:
+        data = fetch('lawService.do', {'target': 'law', 'type': 'XML', 'ID': lid}, oc)
+        root = ET.fromstring(data)
+        new_name = (root.findtext('기본정보/법령명_한글') or '').strip()
+        print('[개명] %s → 법령ID %s의 현행 이름: %s' % (name, lid, new_name or '(없음)'), flush=True)
+    except (ApiError, ET.ParseError) as e:
+        print('[개명] 현행 조회 실패:', name, e, flush=True)
+    cur_meta = None
+    if new_name and norm_name(new_name) != norm_name(name):
+        out['result'] = 'renamed'
+        out['new_name'] = new_name
+        try:
+            rows = _rows_by_name(new_name, oc, '3')
+            cands = [r for r in rows if r['법령ID'] == lid] or [r for r in rows if norm_name(r['법령명한글']) == norm_name(new_name)]
+            if cands:
+                cur_meta = sorted(cands, key=lambda r: r['시행일자'])[-1]
+        except (ApiError, ET.ParseError):
+            pass
+    # 마지막 연혁본 저장(옛 이름으로, 조례가 인용한 조문 번호 그대로)
+    md, info = law_markdown(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': last['법령일련번호']}, oc), last)
+    if out['result'] == 'renamed':
+        md = md.replace('\n---\n', '\nrenamed_to: %s\nhistoric: true\n---\n' % json.dumps(new_name, ensure_ascii=False), 1)
+    else:
+        md = md.replace('\n---\n', '\nhistoric: true\n---\n', 1)
+    md = scrub(md, oc)
+    path = 'laws/연혁/%s_%s_%s.md' % (lid, last['법령일련번호'], safe(name))
+    p = os.path.join(ROOT, path)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, 'w', encoding='utf-8').write(md)
+    key = 'H' + last['법령일련번호']
+    ent = {'id': key, 'name': name, 'kind': last['법령구분명'], 'ministry': last['소관부처명'], 'mst': last['법령일련번호'],
+           'promulgated': last['공포일자'], 'promulgation_no': last['공포번호'], 'effective': last['시행일자'],
+           'revision': last['제개정구분명'], 'path': path, 'sha256': sha(md), 'source': law_source_url(last), 'info': info,
+           'checked': now(), 'historic': True}
+    if out['result'] == 'renamed':
+        ent['renamed_to'] = new_name
+    idx[key] = ent
+    # 현행 법령도 저장(이미 있으면 건너뜀)
+    if cur_meta and cur_meta['법령ID'] not in idx:
+        try:
+            md2, info2 = law_markdown(fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': cur_meta['법령일련번호']}, oc), cur_meta)
+            md2 = scrub(md2, oc)
+            path2 = law_rel_path(cur_meta)
+            p2 = os.path.join(ROOT, path2)
+            os.makedirs(os.path.dirname(p2), exist_ok=True)
+            open(p2, 'w', encoding='utf-8').write(md2)
+            idx[cur_meta['법령ID']] = {'id': cur_meta['법령ID'], 'name': cur_meta['법령명한글'], 'kind': cur_meta['법령구분명'],
+                'ministry': cur_meta['소관부처명'], 'mst': cur_meta['법령일련번호'], 'promulgated': cur_meta['공포일자'],
+                'promulgation_no': cur_meta['공포번호'], 'effective': cur_meta['시행일자'], 'revision': cur_meta['제개정구분명'],
+                'path': path2, 'sha256': sha(md2), 'source': law_source_url(cur_meta), 'info': info2, 'checked': now(),
+                'replaces': name}
+            out['new_saved'] = True
+        except (ApiError, ET.ParseError) as e:
+            print('[개명] 현행 본문 저장 실패:', new_name, e, flush=True)
+    out['path'] = path
+    return out
+
+
 def sync_laws(oc, mode):
     """laws.json에 적은 이름(정확히 같은 법령명)의 현행 법령을 받아 laws/ 에 저장해요."""
     cfg = jload('laws.json', {})
@@ -342,13 +426,32 @@ def sync_laws(oc, mode):
             return 9999
     by_name = {r.get('name'): r for r in idx.values()}
     miss_cache = jload('indexes/laws_missing.json', {})
+    rn_cache = jload('indexes/laws_renamed.json', {})   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
+    renamed = []
     for n, name in enumerate(names, 1):
         if mode != 'full':
             r0 = by_name.get(name)
             if r0 and os.path.exists(os.path.join(ROOT, r0['path'])) and days_ago(r0.get('checked')) < 7:
                 continue
-            if name in miss_cache and days_ago(miss_cache[name]) < 30:
-                missing.append(name)
+            rc = rn_cache.get(name)
+            if rc and days_ago(rc.get('tried')) < 30:
+                if rc.get('result') == 'none':
+                    missing.append(name)
+                continue
+            if name in miss_cache and days_ago(miss_cache[name]) < 30 and rc is None:
+                # 현행에는 없다고 이미 확인했으니 연혁 확인만 해요(처음 한 번)
+                try:
+                    res = resolve_renamed(name, oc, idx)
+                except (ApiError, ET.ParseError) as e:
+                    errors.append('%s(연혁): %s' % (name, e))
+                    continue
+                res['tried'] = today.isoformat()
+                rn_cache[name] = res
+                if res['result'] == 'none':
+                    missing.append(name)
+                else:
+                    renamed.append(name)
+                    print('[개명] %s: %s%s' % (name, res['result'], (' → ' + res.get('new_name', '')) if res.get('new_name') else ''), flush=True)
                 continue
         if (time.time() - T0) / 60 > BUDGET_MIN + 10:
             print('[법령] 시간 한도라 여기까지 저장해요. 다음 실행이 이어받아요.', flush=True)
@@ -358,9 +461,16 @@ def sync_laws(oc, mode):
                                                           'search': '1', 'display': '100', 'nw': '3'}, oc))
             hit = [r for r in rows if norm_name(r['법령명한글']) == norm_name(name) and r['현행연혁코드'] in ('현행', '')]
             if not hit:
-                missing.append(name)
                 miss_cache[name] = today.isoformat()
-                print('[법령] 이름이 같은 현행 법령을 못 찾았어요:', name, flush=True)
+                print('[법령] 이름이 같은 현행 법령을 못 찾았어요. 연혁을 확인해요:', name, flush=True)
+                res = resolve_renamed(name, oc, idx)
+                res['tried'] = today.isoformat()
+                rn_cache[name] = res
+                if res['result'] == 'none':
+                    missing.append(name)
+                else:
+                    renamed.append(name)
+                    print('[개명] %s: %s%s' % (name, res['result'], (' → ' + res.get('new_name', '')) if res.get('new_name') else ''), flush=True)
                 continue
             m = sorted(hit, key=lambda r: r['시행일자'])[-1]
             old = idx.get(m['법령ID'])
@@ -387,7 +497,8 @@ def sync_laws(oc, mode):
             print('[법령] 오류', errors[-1], flush=True)
     jsave('indexes/laws.json', sorted(idx.values(), key=lambda r: r['id']))
     jsave('indexes/laws_missing.json', {k: v for k, v in miss_cache.items() if k in names})
-    print('[법령] 새로·개정 %d · 못 찾음 %d · 오류 %d' % (len(new), len(missing), len(errors)))
+    jsave('indexes/laws_renamed.json', {k: v for k, v in rn_cache.items() if k in names})
+    print('[법령] 새로·개정 %d · 이름 바뀜/폐지(연혁본 저장) %d · 끝내 못 찾음 %d · 오류 %d' % (len(new), len(renamed), len(missing), len(errors)))
     return missing, errors
 
 
