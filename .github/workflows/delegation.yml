@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '41 20 * * 0'   # 매주 월요일 한국시간 05:41
   workflow_dispatch:
+    inputs:
+      limit:
+        description: '맛보기: 이 건수만 받음(비우면 전체)'
+        required: false
+        default: ''
 permissions:
   contents: write
 concurrency:
@@ -21,7 +26,7 @@ jobs:
         env:
           LAW_OC: ${{ secrets.LAW_OC }}
           BUDGET_MIN: '90'
-        run: python -u scripts/delegation.py --mode api
+        run: python -u scripts/delegation.py --mode api ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
       - name: Commit changes
         if: always()
         run: |
