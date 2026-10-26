@@ -107,6 +107,19 @@ def from_repo():
     print('[위임] 저장소 법령에서 조례 위임이 있는 법령 %d건' % n)
 
 
+def retry(fn, what, tries=5):
+    """일시적인 네트워크 오류(이름 해석 실패 등)는 기다렸다가 다시 시도해요."""
+    for i in range(tries):
+        try:
+            return fn()
+        except sync.ApiError as e:
+            if i == tries - 1 or '인증키' in str(e):
+                raise
+            w = 30 * (i + 1)
+            print('[위임] %s 실패(%s) → %d초 뒤 다시 시도 (%d/%d)' % (what, str(e)[:80], w, i + 1, tries - 1), flush=True)
+            time.sleep(w)
+
+
 def list_laws(oc, limit=None):
     rows, page = [], 1
     while True:
@@ -128,7 +141,7 @@ def list_laws(oc, limit=None):
 
 def from_api(oc, limit=None):
     d = load()
-    rows = list_laws(oc, limit)
+    rows = retry(lambda: list_laws(oc, limit), '법령 목록')
     t0, done, skip, fail = time.time(), 0, 0, 0
     for i, r in enumerate(rows, 1):
         name = r['법령명한글']
@@ -232,7 +245,7 @@ if __name__ == '__main__':
         oc = os.environ.get('LAW_OC', '').strip()
         if not oc:
             sys.exit('LAW_OC(법제처 인증키)가 없어요.')
-        upcoming(oc)
+        retry(lambda: upcoming(oc), '시행예정 목록')
     else:
         oc = os.environ.get('LAW_OC', '').strip()
         if not oc:
