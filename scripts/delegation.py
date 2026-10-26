@@ -2,6 +2,7 @@
 """상위법이 지방자치단체 조례로 정하도록 맡긴 조문 목록(indexes/delegations.json) 만들기.
 
 사용:
+  LAW_OC=<인증키> python3 scripts/delegation.py --mode upcoming   # 시행 예정인 법령 목록(indexes/upcoming.json)
   python3 scripts/delegation.py --mode repo                       # 저장소에 이미 있는 법령 본문만 훑음(인증키 필요 없음)
   LAW_OC=<인증키> python3 scripts/delegation.py --mode api        # 법제처 현행 법령 전체를 받아 훑음(이어받기 지원)
   LAW_OC=<인증키> python3 scripts/delegation.py --mode api --limit 30   # 맛보기: 30건만
@@ -166,13 +167,72 @@ def from_api(oc, limit=None):
     print('[위임] 끝: 받음 %d, 건너뜀 %d, 실패 %d, 저장 법령 %d건' % (done, skip, fail, len(d['laws'])))
 
 
+def upcoming(oc):
+    """법제처 「시행예정」 법령 목록 → indexes/upcoming.json (법령 본문은 받지 않아요)."""
+    rows, page, total = [], 1, 0
+    while True:
+        raw = sync.fetch('lawSearch.do', {'target': 'law', 'type': 'XML', 'nw': '2', 'display': '100', 'page': str(page)}, oc)
+        root = ET.fromstring(sync.fix_xml(raw))
+        total = int((root.findtext('totalCnt') or '0').strip() or 0)
+        got = sync.parse_law_list(raw)
+        if not got:
+            break
+        rows += got
+        if page * 100 >= total or page >= 60:
+            break
+        page += 1
+    out = []
+    for r in rows:
+        if r.get('법령구분명') not in KINDS or not r.get('시행일자'):
+            continue
+        out.append({'name': r['법령명한글'], 'kind': r['법령구분명'], 'eff': r['시행일자'], 'rev': r.get('제개정구분명', ''), 'mst': r['법령일련번호']})
+    out.sort(key=lambda z: (z['eff'], z['name']))
+    p = os.path.join(ROOT, 'indexes', 'upcoming.json')
+    try:
+        old = {z['mst']: z for z in json.load(open(p, encoding='utf-8')).get('laws', [])}
+    except Exception:
+        old = {}
+    t0 = time.time()
+    for z in out:                                    # 시행예정 판 본문에서 옛 법령명·바뀌는 조문을 읽어요(실패해도 목록은 남김)
+        o = old.get(z['mst'])
+        if o and 'prev' in o:
+            z['prev'], z['arts'] = o['prev'], o['arts']
+            continue
+        if (time.time() - t0) / 60 > 25:
+            break
+        try:
+            root = ET.fromstring(sync.fix_xml(sync.fetch('lawService.do', {'target': 'law', 'type': 'XML', 'MST': z['mst']}, oc, tries=2, timeout=40)))
+            base = root.find('기본정보')
+            pv = (base.findtext('이전법령명') or '').strip() if base is not None else ''
+            z['prev'] = pv if pv and pv != z['name'] else ''
+            arts = []
+            for u in root.iter('조문단위'):
+                if (u.findtext('조문변경여부') or '').strip() != 'Y' or (u.findtext('조문여부') or '조문').strip() != '조문':
+                    continue
+                n, g = (u.findtext('조문번호') or '').strip(), (u.findtext('조문가지번호') or '').strip()
+                if n:
+                    arts.append(['제%s조%s' % (n, '의' + g if g else ''), (u.findtext('조문제목') or '').strip(), (u.findtext('조문시행일자') or z['eff']).strip()])
+            z['arts'] = arts
+        except Exception as e:
+            print('[예정] 본문 읽기 실패 %s: %s' % (z['name'], str(e)[:80]), flush=True)
+    tmp = p + '.tmp'
+    json.dump({'asof': sync.now()[:10], 'laws': out}, open(tmp, 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
+    os.replace(tmp, p)
+    print('[예정] 시행예정 목록 %d건(전체 %d건 중 법률·시행령 등 %d건)' % (len(out), total, len(out)))
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--mode', choices=['repo', 'api'], default='repo')
+    ap.add_argument('--mode', choices=['repo', 'api', 'upcoming'], default='repo')
     ap.add_argument('--limit', type=int)
     a = ap.parse_args()
     if a.mode == 'repo':
         from_repo()
+    elif a.mode == 'upcoming':
+        oc = os.environ.get('LAW_OC', '').strip()
+        if not oc:
+            sys.exit('LAW_OC(법제처 인증키)가 없어요.')
+        upcoming(oc)
     else:
         oc = os.environ.get('LAW_OC', '').strip()
         if not oc:
