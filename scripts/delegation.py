@@ -157,7 +157,8 @@ def from_api(oc, limit=None):
             save(d)
             print('[위임] %d/%d (받음 %d, 건너뜀 %d, 실패 %d)' % (i, len(rows), done, skip, fail), flush=True)
     # 현행 목록에서 사라진 법령은 정리(제한 실행이 아닐 때만)
-    if not limit:
+    prev_api = sum(1 for v in d['laws'].values() if v.get('src') == 'api')
+    if not limit and (prev_api == 0 or len(rows) >= 0.9 * prev_api):   # 목록이 평소보다 크게 줄었으면 정리하지 않아요
         names = {r['법령명한글'] for r in rows}
         for k in [k for k, v in d['laws'].items() if v.get('src') == 'api' and k not in names]:
             d['laws'].pop(k)
