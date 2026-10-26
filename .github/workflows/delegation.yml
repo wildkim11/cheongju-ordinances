@@ -30,10 +30,15 @@ jobs:
         run: |
           N=$(printf '%s' "$LIMIT" | tr -dc '0-9')   # 숫자만 씀(「--limit 30」처럼 적어도 30으로 읽음)
           if [ -n "$N" ]; then python -u scripts/delegation.py --mode api --limit "$N"; else python -u scripts/delegation.py --mode api; fi
+      - name: Collect upcoming amendments
+        continue-on-error: true
+        env:
+          LAW_OC: ${{ secrets.LAW_OC }}
+        run: python -u scripts/delegation.py --mode upcoming
       - name: Commit changes
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -f indexes/delegations.json ]; then git add indexes/delegations.json; fi
+          for f in indexes/delegations.json indexes/upcoming.json; do if [ -f "$f" ]; then git add "$f"; fi; done
           if git diff --cached --quiet; then echo "변경 없음"; else git commit -m "data: refresh delegations $(date -u +%F)" && git push; fi
