@@ -1,7 +1,7 @@
 name: Update delegations
 on:
   schedule:
-    - cron: '41 20 * * 0'   # 매주 월요일 한국시간 05:41
+    - cron: '41 20 * * *'   # 매일 한국시간 05:41
   workflow_dispatch:
     inputs:
       limit:
