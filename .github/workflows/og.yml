@@ -52,7 +52,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "$(cat og_same.txt)" = "1" ]; then
             echo "변경 없음" | tee -a "$GITHUB_STEP_SUMMARY"
-          elif grep -q '확인 필요' og_report.md; then
+          elif grep -q '^- .*확인 필요' og_report.md; then
             git checkout -B og-review
             cp og_new.json indexes/og.json
             cp og_report.md indexes/og_report.md
