@@ -24,7 +24,7 @@ def versions(name, oc):
     for nw in ('2', '1', '3'):
         for page in range(1, 6):
             try:
-                d = sync.fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': name, 'search': '1', 'display': '100', 'page': str(page), 'nw': nw}, oc, tries=3, timeout=30)
+                d = sync.fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': name, 'search': '1', 'display': '100', 'page': str(page), 'nw': nw}, oc, tries=3, timeout=25)
             except Exception as e:
                 print('  목록 오류', name, nw, str(e)[:120], flush=True); break
             total, rows = sync.parse_list(d)
@@ -86,11 +86,13 @@ def duty_file(xml):
 def run(cache, since='20220101', today=None):
     oc = os.environ.get('LAW_OC', '').strip()
     if not oc: sys.exit('LAW_OC(법제처 인증키)가 없어요.')
-    today = today or (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime('%Y%m%d')
+    today = today or (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)).strftime('%Y%m%d')
     for sub in ('hw', 'gs', 'rule'): os.makedirs(os.path.join(cache, sub), exist_ok=True)
     meta = {'future': [], 'missing': []}
     for name, sub in ((N_JW, 'hw'), (N_GS, 'gs'), (N_RULE, 'rule')):
         vs = versions(name, oc)
+        if not vs:      # 접속 실패·응답 이상: 빈 결과로 연혁을 덮어쓰지 않도록 바로 멈춤
+            sys.exit('법제처에서 「%s」 판 목록을 받지 못했어요(접속 지연 가능). 잠시 뒤 다시 실행하세요.' % name)
         print('[%s] 판 %d개: %s' % (name, len(vs), ', '.join(sorted(vs))), flush=True)
         for d in sorted(vs):
             if d > today: meta['future'].append([name, d]); continue

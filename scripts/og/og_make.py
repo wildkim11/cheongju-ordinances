@@ -28,6 +28,8 @@ def build_og(cache, cfg=None, manual=None, prev=None):
     cfg = cfg or {}; manual = manual or {}
     s_from = cfg.get('s_from', '20220930'); cm_from = cfg.get('cm_from', '2022-07-06')
     R, hw, cm = load(cache)
+    if not (R and hw and cm):
+        sys.exit('내려받은 자료가 비어 있어요(정원조례 %d판·위원회조례 %d판·시행규칙 %d판). 연혁을 만들지 않고 멈춰요.' % (len(hw), len(cm), len(R)))
     flags = []
     mf = os.path.join(cache, 'fetch_meta.json')
     if os.path.exists(mf):
