@@ -1,0 +1,70 @@
+name: 조직 연혁 갱신
+# 법제처에서 정원조례·위원회 조례·시행규칙 별표를 받아 indexes/og.json(조직 연혁)을 다시 만들어요.
+# 확인할 것이 없으면 main에 바로 반영하고, 있으면 og-review 브랜치에 올려 두고 멈춰요.
+on:
+  schedule:
+    - cron: '0 21 * * 1'      # 매주 화요일 06:00(KST)
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  og:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 필요한 꾸러미 설치
+        run: pip install pyxlsb xlrd openpyxl
+      - name: 내려받기
+        env:
+          LAW_OC: ${{ secrets.LAW_OC }}
+        run: python3 scripts/og/og_fetch.py og_cache
+      - name: 연혁 만들기
+        run: |
+          python3 scripts/og/og_make.py og_cache --out og_new.json --report og_report.md \
+            --config indexes/og_config.json --manual indexes/og_manual.json --prev indexes/og.json
+      - name: 결과 요약
+        run: cat og_report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: 결과 파일 올리기
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: og_result
+          path: |
+            og_new.json
+            og_report.md
+            og_cache/fetch_meta.json
+          retention-days: 14
+      - name: 반영
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          a = json.load(open('og_new.json', encoding='utf-8'))
+          b = json.load(open('indexes/og.json', encoding='utf-8'))
+          open('og_same.txt', 'w').write('1' if a == b else '0')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$(cat og_same.txt)" = "1" ]; then
+            echo "변경 없음" | tee -a "$GITHUB_STEP_SUMMARY"
+          elif grep -q '확인 필요' og_report.md; then
+            git checkout -B og-review
+            cp og_new.json indexes/og.json
+            cp og_report.md indexes/og_report.md
+            git add indexes/og.json indexes/og_report.md
+            git commit -m "조직 연혁 갱신(확인 필요 항목 있음)"
+            git push -f origin og-review
+            echo "확인할 항목이 있어 main에는 반영하지 않고 og-review 브랜치에 올렸어요." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            cp og_new.json indexes/og.json
+            cp og_report.md indexes/og_report.md
+            git add indexes/og.json indexes/og_report.md
+            git commit -m "조직 연혁 자동 갱신"
+            git push origin HEAD:${GITHUB_REF_NAME}
+            echo "indexes/og.json을 갱신했어요. 내일 아침 번들에 실려요." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
