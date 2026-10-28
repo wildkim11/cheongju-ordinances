@@ -1,0 +1,43 @@
+name: bundle
+
+# 조례·법령 업데이터가 받아 가는 자료 묶음을 만들어 data 브랜치에 한 개만 덮어써요(저장소 기록이 늘지 않음).
+# 매일 07:30(한국시간): sync.yml(06:23)·delegation.yml(05:41)이 끝난 뒤. 수동 실행도 가능.
+on:
+  schedule:
+    - cron: '30 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bundle
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 자료 묶음 만들기
+        run: |
+          ORD_REPO="$GITHUB_WORKSPACE" python3 tools/ot/make_bundle.py "$RUNNER_TEMP/bundle"
+          ls -la "$RUNNER_TEMP/bundle"
+      - name: data 브랜치에 올리기(기록을 남기지 않고 덮어씀)
+        run: |
+          cd "$RUNNER_TEMP/bundle"
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "bundle $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
