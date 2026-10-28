@@ -1,0 +1,26 @@
+name: Probe org history 2
+# 조직 연혁 자동화가 가능한지 확인하는 시험(수동 실행 전용). 저장소 내용은 바꾸지 않고 결과 파일만 내려받게 해요.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 시험 실행
+        env:
+          LAW_OC: ${{ secrets.LAW_OC }}
+        run: python3 scripts/probe_og2.py
+      - name: 결과 파일 올리기
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe_og2
+          path: probe_og2/
+          retention-days: 7
