@@ -1,11 +1,13 @@
 {
- "checkedAt": "2026-10-29T07:01:26+09:00",
+ "checkedAt": "2026-10-30T07:46:18+09:00",
  "mode": "incremental",
  "listed": 756,
  "new": [],
  "changed": [],
  "absent": [],
- "errors": [],
+ "errors": [
+  "외국인투자 촉진법 시행령: 요청 실패: lawSearch.do (<urlopen error [Errno -3] Temporary failure in name resolution>)"
+ ],
  "laws_missing": [
   "지방공무원법 시행령",
   "지방공무원법 시행규칙",
