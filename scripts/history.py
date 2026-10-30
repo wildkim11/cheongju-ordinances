@@ -274,15 +274,22 @@ def law_md(sync, oc, row):
 
 def ord_versions(sync, oc, oid, name):
     rows = {}
-    for page in range(1, 6):
-        d = sync.fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': name, 'search': '1', 'display': '100',
-                                        'page': str(page), 'nw': '2'}, oc, tries=2, timeout=30)
-        total, rs = sync.parse_list(d)
-        for r in rs:
-            if r.get('자치법규ID') == oid or (sync.norm_name(r['자치법규명']) == sync.norm_name(name)
-                                             and r['지자체기관명'].startswith(sync.ORG_PREFIX)):
-                rows[r['자치법규일련번호']] = r
-        if not rs or page * 100 >= total:
+    qs = [name]
+    for q2 in (name.replace('·', 'ㆍ'), name.replace('ㆍ', '·')):
+        if q2 not in qs:
+            qs.append(q2)
+    for qn in qs:
+        for page in range(1, 6):
+            d = sync.fetch('lawSearch.do', {'target': 'ordin', 'type': 'XML', 'query': qn, 'search': '1', 'display': '100',
+                                            'page': str(page), 'nw': '2'}, oc, tries=2, timeout=30)
+            total, rs = sync.parse_list(d)
+            for r in rs:
+                if r.get('자치법규ID') == oid or (sync.norm_name(r['자치법규명']) == sync.norm_name(name)
+                                                 and r['지자체기관명'].startswith(sync.ORG_PREFIX)):
+                    rows[r['자치법규일련번호']] = r
+            if not rs or page * 100 >= total:
+                break
+        if rows:
             break
     return sorted(rows.values(), key=lambda r: (r['공포일자'], r['자치법규일련번호']))
 
@@ -311,12 +318,12 @@ def backfill(kind, since, limit, budget):
     todo = []
     if kind in ('laws', 'both'):
         for x in jload(os.path.join(ROOT, 'indexes', 'laws.json'), []):
-            if x.get('id') and x['id'] not in state['l']:
+            if x.get('id') and (x['id'] not in state['l'] or not state['l'][x['id']].get('n')):
                 names = [x['name']] + [n for n in [((x.get('info') or {}).get('이전법령명') or '')] if n and n != x['name']]
                 todo.append(('l', x['id'], x['name'], names))
     if kind in ('ordinances', 'both'):
         for x in jload(os.path.join(ROOT, 'indexes', 'ordinances.json'), []):
-            if x.get('id') and x['id'] not in state['o'] and (x.get('status') or 'active') == 'active':
+            if x.get('id') and (x['id'] not in state['o'] or not state['o'][x['id']].get('n')) and (x.get('status') or 'active') == 'active':
                 todo.append(('o', x['id'], x['name'], [x['name']]))
     if limit:
         todo = todo[:limit]
