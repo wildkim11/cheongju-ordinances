@@ -42,7 +42,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "--- 작업 폴더 상태 ---"; git status --short | head -30
           git add history reports/history_backfill.md
           if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
           git commit -m "data: history backfill $(date -u +%F)"
-          for i in 1 2 3; do git pull --rebase -q && git push && break; sleep 10; done
+          for i in 1 2 3 4 5; do
+            if git pull --rebase --autostash -q && git push; then echo "올림 완료"; exit 0; fi
+            sleep $((i * 10))
+          done
+          echo "저장소에 올리지 못했어요. 위 로그를 확인하세요."; exit 1
