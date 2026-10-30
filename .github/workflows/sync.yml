@@ -40,6 +40,9 @@ jobs:
         run: python -u scripts/sync.py --mode "${{ inputs.mode || 'incremental' }}"
       - name: Validate
         run: python scripts/validate.py
+      - name: Record changes (변경 이력 · 모든 조 비교)
+        continue-on-error: true
+        run: python scripts/history.py daily
       - name: Commit changes
         if: always()
         run: |

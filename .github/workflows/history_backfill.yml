@@ -1,0 +1,48 @@
+name: History backfill
+# 2023년 이후 법령·조례 개정 이력을 법제처 연혁 자료로 채워요(수동 실행).
+# 처음엔 limit에 5를 넣어 시험하고, reports/history_backfill.md 를 확인한 뒤 0(전부)으로 실행하세요.
+# 한 번에 다 못 끝나면 진행 상황을 저장하고 멈춰요. 같은 설정으로 다시 실행하면 이어서 해요.
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: '무엇을 채울지'
+        type: choice
+        default: both
+        options: [both, laws, ordinances]
+      since:
+        description: '이 날짜 이후 개정부터 (YYYYMMDD)'
+        default: '20230101'
+      limit:
+        description: '이번에 처리할 개수 (0 = 남은 것 전부)'
+        default: '5'
+      budget:
+        description: '최대 실행 시간(분)'
+        default: '300'
+permissions:
+  contents: write
+concurrency:
+  group: ordinances-sync
+  cancel-in-progress: false
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 이력 채우기
+        env:
+          LAW_OC: ${{ secrets.LAW_OC }}
+        run: python -u scripts/history.py backfill --kind "${{ inputs.kind }}" --since "${{ inputs.since }}" --limit "${{ inputs.limit }}" --budget "${{ inputs.budget }}"
+      - name: 저장
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add history reports/history_backfill.md
+          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
+          git commit -m "data: history backfill $(date -u +%F)"
+          for i in 1 2 3; do git pull --rebase -q && git push && break; sleep 10; done
