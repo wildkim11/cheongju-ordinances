@@ -71,6 +71,11 @@ def main():
     os.makedirs(out, exist_ok=True)
     ot, au, od = build(repo)
     bundle = {'v': 1, 'asof': ot.get('asof', ''), 'OT': ot, 'AU': au, 'OD': od}
+    hp = os.path.join(os.path.abspath(os.path.expanduser(repo)), 'history', 'index.json')
+    if os.path.exists(hp):
+        hi = json.load(open(hp, encoding='utf-8'))
+        bundle['HI'] = {'updated': hi.get('updated', ''), 'ev': hi.get('ev', [])}
+        print('변경 이력 %d건을 묶음에 넣음' % len(bundle['HI']['ev']))
     raw = json.dumps(bundle, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     gz = gzip.compress(raw, 9, mtime=0)
     open(os.path.join(out, 'ot_bundle.json.gz'), 'wb').write(gz)
