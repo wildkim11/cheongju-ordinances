@@ -41,9 +41,10 @@ def only_articles(u):
 
 class Getter:
     """판(mst) 하나를 받아 조 단위로 돌려줌. 같은 실행 안에서는 한 번만 받음."""
-    def current(self, lid, name, kind=''):
+    def current(self, lid, name, kind='', efyd=''):
         """법령ID로 지금 시행 중인 판(현행)을 받아 (일련번호, 조 단위)로 돌려줌."""
-        data = sync.fetch('lawService.do', {'target': 'law', 'type': 'XML', 'ID': lid}, self.oc, tries=2, timeout=60)
+        q = {'target': 'eflaw', 'type': 'XML', 'ID': lid, 'efYd': efyd} if efyd else {'target': 'law', 'type': 'XML', 'ID': lid}
+        data = sync.fetch('lawService.do', q, self.oc, tries=2, timeout=60)
         root = ET.fromstring(sync.fix_xml(data))
         mst = (root.findtext('기본정보/법령일련번호') or root.attrib.get('법령키') or '').strip() or 'cur:' + lid
         self.cureff = (root.findtext('기본정보/시행일자') or '').strip()
@@ -73,6 +74,15 @@ class Getter:
         return self.mem[mst]
 
 
+def dayb(eff):
+    """시행일 하루 전(YYYYMMDD). 그날 시행 중이던 판이 「이전 판」임."""
+    import datetime
+    try:
+        return (datetime.date(int(eff[:4]), int(eff[4:6]), int(eff[6:8])) - datetime.timedelta(days=1)).strftime('%Y%m%d')
+    except Exception:
+        return ''
+
+
 def repo_units(name):
     """저장소 laws/ 아래 현행 본문(연혁 제외)을 조 단위로. 없으면 None."""
     fs = [f for f in glob.glob(os.path.join(ROOT, 'laws', '*', '*_%s.md' % sync.safe(name))) if '연혁' not in f]
@@ -96,7 +106,7 @@ def main():
     keep, over = {}, False
     for name, vs in sorted(by.items()):
         vs.sort(key=lambda z: (z['eff'], z['mst']))
-        cache = {e['mst']: e for e in old.get(name, []) if e.get('base') in ('pred', 'repo', 'cur')}   # pred·repo로 받은 판만 재사용(prev·빈 값은 옛 방식이라 다시 받음)
+        cache = {e['mst']: e for e in old.get(name, []) if e.get('base') in ('pred', 'repo', 'cur', 'new')}   # pred·repo로 받은 판만 재사용(prev·빈 값은 옛 방식이라 다시 받음)
         res, rows, idx = [], None, {}
         for z in vs:
             e = cache.get(z['mst'])
@@ -112,17 +122,22 @@ def main():
                         i = idx.get(z['mst'])
                         pred = rows[i - 1] if (i is not None and i > 0) else None
                         if pred is None:
-                            bu, cm = None, ''
+                            bu, cm, new = None, '', False
                             if i in (None, 0):
                                 try:      # 연혁 검색에 앞 판이 없으면 현행 판을 법령ID로 직접 받음(이 판이 현행이 아닐 때만)
-                                    cm, cu = G.current(G.lid.get(z['mst'], ''), name, z.get('kind', ''))
+                                    cm, cu = G.current(G.lid.get(z['mst'], ''), name, z.get('kind', ''), dayb(z['eff']))
                                     if cm != z['mst'] and G.cureff != z['eff']:      # 현행이 이 판 자신이면 건너뜀
                                         bu = cu
                                 except Exception as ex2:
-                                    print('[예정본문] 현행 받기 실패 %s: %s' % (name, str(ex2)[:70]), flush=True)
-                            if bu is None:
+                                    if '비어' in str(ex2):
+                                        new = True      # 현행 판이 아예 없음 = 새로 제정되는 법령
+                                    else:
+                                        print('[예정본문] 현행 받기 실패 %s: %s' % (name, str(ex2)[:70]), flush=True)
+                            if bu is None and not new:
                                 bu = repo_units(name)      # 그래도 없으면 저장소 현행 본문과 견줌
-                            if bu is None:
+                            if bu is None and new:
+                                e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'new', 'u': []}
+                            elif bu is None:
                                 print('[예정본문] 앞 판 없음 %s %s (연혁 %d판, 이 판 %s, 현행 %s/%s)' % (name, z['eff'], len(rows or []), '있음' if i is not None else '없음', cm or '-', G.cureff), flush=True)
                                 e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'none', 'u': []}
                             else:
