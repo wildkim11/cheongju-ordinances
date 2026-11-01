@@ -58,6 +58,11 @@ def build(repo):
     run([sys.executable, 'mkaudit.py'], env)
     au = json.load(open(os.path.join(HERE, 'au.json'), encoding='utf-8'))
     ot['ae'] = build_ae(repo, ot)
+    # 개정 예정 법령마다 현재 시행 중인 판의 시행일(저장소 indexes/laws.json). 화면에서 「현재 ○○ 시행본 → 개정 예정 ○○」으로 보여 줌
+    lp = os.path.join(os.path.abspath(os.path.expanduser(repo)), 'indexes', 'laws.json')
+    if os.path.exists(lp):
+        eff = {x.get('name'): x.get('effective') for x in json.load(open(lp, encoding='utf-8')) if x.get('name') and x.get('effective')}
+        ot['ef'] = {u[0]: eff[u[0]] for u in ot.get('up', []) if u[0] in eff}
     import od_build
     od = od_build.build(repo)
     return ot, au, od
