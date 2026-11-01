@@ -35,10 +35,15 @@ jobs:
         env:
           LAW_OC: ${{ secrets.LAW_OC }}
         run: python -u scripts/delegation.py --mode upcoming
+      - name: Collect upcoming amendment texts
+        continue-on-error: true
+        env:
+          LAW_OC: ${{ secrets.LAW_OC }}
+        run: python -u scripts/upcoming_text.py --budget 40
       - name: Commit changes
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for f in indexes/delegations.json indexes/upcoming.json; do if [ -f "$f" ]; then git add "$f"; fi; done
+          for f in indexes/delegations.json indexes/upcoming.json indexes/upcoming_text.json; do if [ -f "$f" ]; then git add "$f"; fi; done
           if git diff --cached --quiet; then echo "변경 없음"; else git commit -m "data: refresh delegations $(date -u +%F)" && git push; fi
