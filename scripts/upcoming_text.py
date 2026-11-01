@@ -74,6 +74,29 @@ class Getter:
         return self.mem[mst]
 
 
+def ef_rows(oc, lid, name):
+    """시행일 기준 목록(eflaw)에서 법령ID가 같은 판들. 연혁·시행예정·현행을 함께 요청함."""
+    out = {}
+    for nw in ('1,2,3', ''):
+        for page in range(1, 11):
+            q = {'target': 'eflaw', 'type': 'XML', 'query': name, 'search': '1', 'display': '100', 'page': str(page)}
+            if nw:
+                q['nw'] = nw
+            try:
+                rs = sync.parse_law_list(sync.fetch('lawSearch.do', q, oc, tries=2, timeout=30))
+            except Exception as e:
+                print('[예정본문] 시행일 목록 실패 %s: %s' % (name, str(e)[:70]), flush=True)
+                break
+            for r in rs:
+                if r.get('법령ID') == lid:
+                    out[r['법령일련번호']] = r
+            if len(rs) < 100:
+                break
+        if len(out) > 1:
+            break
+    return list(out.values())
+
+
 def dayb(eff):
     """시행일 하루 전(YYYYMMDD). 그날 시행 중이던 판이 「이전 판」임."""
     import datetime
@@ -107,7 +130,7 @@ def main():
     for name, vs in sorted(by.items()):
         vs.sort(key=lambda z: (z['eff'], z['mst']))
         cache = {e['mst']: e for e in old.get(name, []) if e.get('base') in ('pred', 'repo', 'cur', 'new')}   # pred·repo로 받은 판만 재사용(prev·빈 값은 옛 방식이라 다시 받음)
-        res, rows, idx = [], None, {}
+        res, rows, idx, ef = [], None, {}, None
         for z in vs:
             e = cache.get(z['mst'])
             if e is None and not over:
@@ -123,22 +146,23 @@ def main():
                         pred = rows[i - 1] if (i is not None and i > 0) else None
                         if pred is None:
                             bu, cm, new = None, '', False
-                            if i in (None, 0):
-                                try:      # 연혁 검색에 앞 판이 없으면 현행 판을 법령ID로 직접 받음(이 판이 현행이 아닐 때만)
-                                    cm, cu = G.current(G.lid.get(z['mst'], ''), name, z.get('kind', ''), dayb(z['eff']))
-                                    if cm != z['mst'] and G.cureff != z['eff']:      # 현행이 이 판 자신이면 건너뜀
-                                        bu = cu
+                            if ef is None:
+                                ef = ef_rows(oc, G.lid.get(z['mst'], ''), name)
+                            cand = [r for r in ef if r.get('시행일자') and r['시행일자'] < z['eff'] and r['법령일련번호'] != z['mst']]
+                            if cand:      # 시행일 순으로 바로 앞(이 판 시행 직전까지 시행 중이던) 판
+                                c = max(cand, key=lambda r: (r['시행일자'], r.get('공포일자', ''), r['법령일련번호']))
+                                try:
+                                    bu, cm = G.units(c['법령일련번호'], name, z.get('kind', ''), c['시행일자'], c.get('제개정구분명', '')), c['법령일련번호']
                                 except Exception as ex2:
-                                    if '비어' in str(ex2):
-                                        new = True      # 현행 판이 아예 없음 = 새로 제정되는 법령
-                                    else:
-                                        print('[예정본문] 현행 받기 실패 %s: %s' % (name, str(ex2)[:70]), flush=True)
+                                    print('[예정본문] 이전 판 받기 실패 %s: %s' % (name, str(ex2)[:70]), flush=True)
+                            elif z.get('rev') == '제정':
+                                new = True      # 새로 제정되는 법령이라 이전 판이 없음
                             if bu is None and not new:
                                 bu = repo_units(name)      # 그래도 없으면 저장소 현행 본문과 견줌
                             if bu is None and new:
                                 e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'new', 'u': []}
                             elif bu is None:
-                                print('[예정본문] 앞 판 없음 %s %s (연혁 %d판, 이 판 %s, 현행 %s/%s)' % (name, z['eff'], len(rows or []), '있음' if i is not None else '없음', cm or '-', G.cureff), flush=True)
+                                print('[예정본문] 앞 판 없음 %s %s (연혁 %d판, 시행일 목록 %d판, 이 판 %s)' % (name, z['eff'], len(rows or []), len(ef or []), '있음' if i is not None else '없음'), flush=True)
                                 e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'none', 'u': []}
                             else:
                                 want = {x[0] for x in z.get('arts', [])}
