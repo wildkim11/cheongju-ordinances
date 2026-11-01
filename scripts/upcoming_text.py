@@ -45,7 +45,8 @@ class Getter:
         """법령ID로 지금 시행 중인 판(현행)을 받아 (일련번호, 조 단위)로 돌려줌."""
         data = sync.fetch('lawService.do', {'target': 'law', 'type': 'XML', 'ID': lid}, self.oc, tries=2, timeout=60)
         root = ET.fromstring(sync.fix_xml(data))
-        mst = (root.findtext('기본정보/법령일련번호') or '').strip()
+        mst = (root.findtext('기본정보/법령일련번호') or root.attrib.get('법령키') or '').strip() or 'cur:' + lid
+        self.cureff = (root.findtext('기본정보/시행일자') or '').strip()
         if mst not in self.mem:
             meta = {'법령ID': lid, '법령명한글': name, '법령구분명': kind, '소관부처명': '', '법령일련번호': mst,
                     '공포일자': '', '공포번호': '', '시행일자': '', '제개정구분명': ''}
@@ -54,6 +55,7 @@ class Getter:
         return mst, self.mem[mst]
 
     def __init__(self, oc):
+        self.cureff = ''
         self.oc, self.mem, self.lid = oc, {}, {}
 
     def units(self, mst, name, kind='', eff='', rev=''):
@@ -114,21 +116,21 @@ def main():
                             if i in (None, 0):
                                 try:      # 연혁 검색에 앞 판이 없으면 현행 판을 법령ID로 직접 받음(이 판이 현행이 아닐 때만)
                                     cm, cu = G.current(G.lid.get(z['mst'], ''), name, z.get('kind', ''))
-                                    if cm and cm != z['mst']:
+                                    if cm != z['mst'] and G.cureff != z['eff']:      # 현행이 이 판 자신이면 건너뜀
                                         bu = cu
                                 except Exception as ex2:
                                     print('[예정본문] 현행 받기 실패 %s: %s' % (name, str(ex2)[:70]), flush=True)
                             if bu is None:
                                 bu = repo_units(name)      # 그래도 없으면 저장소 현행 본문과 견줌
                             if bu is None:
-                                print('[예정본문] 앞 판 없음 %s %s (연혁 %d판, 이 판 %s)' % (name, z['eff'], len(rows or []), '있음' if i is not None else '없음'), flush=True)
+                                print('[예정본문] 앞 판 없음 %s %s (연혁 %d판, 이 판 %s, 현행 %s/%s)' % (name, z['eff'], len(rows or []), '있음' if i is not None else '없음', cm or '-', G.cureff), flush=True)
                                 e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'none', 'u': []}
                             else:
                                 want = {x[0] for x in z.get('arts', [])}
                                 d = only_articles(history.diff_units(bu, cur))
                                 if want:
                                     d = [x for x in d if x[0] in want]
-                                e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'cur' if (cm and bu is not None and cm != z['mst']) else 'repo', 'u': d}
+                                e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'cur' if (cm and bu is not None) else 'repo', 'u': d}
                         else:
                             bu = G.units(pred['법령일련번호'], name, z.get('kind', ''), pred.get('시행일자', ''), pred.get('제개정구분명', ''))
                             want = {x[0] for x in z.get('arts', [])}
