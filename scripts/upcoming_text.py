@@ -59,6 +59,12 @@ class Getter:
         return self.mem[mst]
 
 
+def repo_units(name):
+    """저장소 laws/ 아래 현행 본문(연혁 제외)을 조 단위로. 없으면 None."""
+    fs = [f for f in glob.glob(os.path.join(ROOT, 'laws', '*', '*_%s.md' % sync.safe(name))) if '연혁' not in f]
+    return history.units(open(fs[0], encoding='utf-8').read()) if fs else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--budget', type=float, default=40, help='분 단위 시간 한도')
@@ -76,7 +82,7 @@ def main():
     keep, over = {}, False
     for name, vs in sorted(by.items()):
         vs.sort(key=lambda z: (z['eff'], z['mst']))
-        cache = {e['mst']: e for e in old.get(name, []) if e.get('base') == 'pred'}   # 새 방식(base=pred)으로 받은 판만 재사용
+        cache = {e['mst']: e for e in old.get(name, []) if e.get('base') in ('pred', 'repo')}   # pred·repo로 받은 판만 재사용(prev·빈 값은 옛 방식이라 다시 받음)
         res, rows, idx = [], None, {}
         for z in vs:
             e = cache.get(z['mst'])
@@ -92,7 +98,16 @@ def main():
                         i = idx.get(z['mst'])
                         pred = rows[i - 1] if (i is not None and i > 0) else None
                         if pred is None:
-                            e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'none', 'u': []}      # 앞 판을 못 찾음 → 다음 실행에서 다시 시도
+                            bu = repo_units(name)      # 앞 판을 못 찾으면 저장소 현행 본문과 견줌
+                            if bu is None:
+                                print('[예정본문] 앞 판 없음 %s %s (연혁 %d판, 이 판 %s)' % (name, z['eff'], len(rows or []), '있음' if i is not None else '없음'), flush=True)
+                                e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'none', 'u': []}
+                            else:
+                                want = {x[0] for x in z.get('arts', [])}
+                                d = only_articles(history.diff_units(bu, cur))
+                                if want:
+                                    d = [x for x in d if x[0] in want]
+                                e = {'eff': z['eff'], 'mst': z['mst'], 'base': 'repo', 'u': d}
                         else:
                             bu = G.units(pred['법령일련번호'], name, z.get('kind', ''), pred.get('시행일자', ''), pred.get('제개정구분명', ''))
                             want = {x[0] for x in z.get('arts', [])}
