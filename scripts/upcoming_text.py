@@ -11,7 +11,7 @@
 
 결과 형식 (indexes/upcoming_text.json)
   {"asof": "YYYY-MM-DD",
-   "laws": {"법령명": [{"eff": "YYYYMMDD", "mst": "…", "base": "pred"|"none", "pm": 앞 판 mst, "u": [[조, "n"|"c"|"d", 이전, 이후], …]}, …]}}
+   "laws": {"법령명": [{"eff": "YYYYMMDD", "mst": "…", "base": "pred"|"cur"|"repo"|"new"|"hist"|"none", "pm": 앞 판 mst, "u": [[조, "n"|"c"|"d", 이전, 이후], …]}, …]}}
 표준 라이브러리만 씀.
 """
 import argparse, glob, json, os, sys, time
@@ -112,6 +112,54 @@ def repo_units(name):
     return history.units(open(fs[0], encoding='utf-8').read()) if fs else None
 
 
+def dated_articles(keep):
+    """현행 본문 안에 「조문별 시행일」이 뒤로 잡힌 조(laws.json의 조문시행일자문자열)의 이전·이후를
+    저장소 변경 이력(history/l/<ID>.json)에서 가져와 keep에 넣음. 법제처를 다시 부르지 않음.
+    이력의 가장 최근 기록 가운데 그 조를 바꾼 기록의 이전·이후를 씀."""
+    import re
+    laws = jload(os.path.join(ROOT, 'indexes', 'laws.json'), [])
+    td = history.today().replace('-', '')
+    add = 0
+    for x in laws:
+        raw = (x.get('info') or {}).get('조문시행일자문자열', '')
+        if not raw or not x.get('id'):
+            continue
+        by = {}
+        for ln in raw.split('\n'):
+            d, _, rest = ln.partition(':')
+            if d.isdigit() and len(d) == 8 and d > td and rest:
+                for a in rest.split(','):
+                    m = re.match(r'제\d+조(?:의\d+)?', a.strip())
+                    if m:
+                        by.setdefault(d, []).append(m.group(0))
+        if not by:
+            continue
+        hf = jload(os.path.join(ROOT, 'history', 'l', '%s.json' % x['id']), {})
+        evs = list(reversed(hf.get('ev') or []))
+        if not evs:
+            continue
+        name = x['name']
+        for d, arts in sorted(by.items()):
+            if any(e.get('eff') == d for e in keep.get(name, [])):
+                continue
+            u, seen = [], set()
+            for a in arts:
+                if a in seen:
+                    continue
+                seen.add(a)
+                for ev in evs:
+                    hit = [t for t in (ev.get('u') or []) if t[0] == a]
+                    if hit:
+                        u.append(list(hit[0]))
+                        break
+            if u:
+                keep.setdefault(name, []).append({'eff': d, 'mst': x.get('mst', ''), 'base': 'hist', 'u': u})
+                add += 1
+    for name in keep:
+        keep[name].sort(key=lambda e: (e['eff'], e.get('mst', '')))
+    print('[예정본문] 조문별 시행일이 뒤인 조 %d건을 변경 이력에서 채움' % add)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--budget', type=float, default=40, help='분 단위 시간 한도')
@@ -188,6 +236,7 @@ def main():
                 res.append(e)
         if res:
             keep[name] = res
+    dated_articles(keep)
     tmp = OUT + '.tmp'
     json.dump({'asof': history.today(), 'laws': keep}, open(tmp, 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
     os.replace(tmp, OUT)
