@@ -8,7 +8,7 @@
   meta.json         : 자료 기준일과 변경 확인용 일련번호(ms), 건수
 준비: node(v16 이상), python3. 저장소의 indexes/·ordinances/·laws/·reports/ 가 최신이어야 해요.
 """
-import gzip, json, os, re, subprocess, sys, datetime
+import base64, gzip, json, os, re, subprocess, sys, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -63,6 +63,15 @@ def build(repo):
     if os.path.exists(lp):
         eff = {x.get('name'): x.get('effective') for x in json.load(open(lp, encoding='utf-8')) if x.get('name') and x.get('effective')}
         ot['ef'] = {u[0]: eff[u[0]] for u in ot.get('up', []) if u[0] in eff}
+    # 개정 예정 본문(이전·이후 조문) 전체를 압축해 담음 → 인터넷 없이도 보임. 앱은 utz를 풀어 씀(없으면 저장소에서 받음)
+    up_p = os.path.join(os.path.abspath(os.path.expanduser(repo)), 'indexes', 'upcoming_text.json')
+    if os.path.exists(up_p):
+        j = json.load(open(up_p, encoding='utf-8'))
+        laws = {n: [{'eff': e.get('eff'), 'base': e.get('base'), 'u': e.get('u', [])} for e in vs] for n, vs in (j.get('laws') or {}).items()}
+        zraw = json.dumps({'asof': j.get('asof', ''), 'laws': laws}, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        ot['utz'] = base64.b64encode(gzip.compress(zraw, 9, mtime=0)).decode('ascii')
+        ot['uta'] = j.get('asof', '')
+        print('개정 예정 본문 %d개 법령을 묶음에 넣음(압축 %.1f MB)' % (len(laws), len(ot['utz']) / 1e6))
     import od_build
     od = od_build.build(repo)
     return ot, au, od
