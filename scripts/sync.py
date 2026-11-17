@@ -555,6 +555,10 @@ def sync_laws(oc, mode):
         except ValueError:
             return 9999
     by_name = {r.get('name'): r for r in idx.values()}
+    try:
+        dl_mst = {k: str(v.get('mst') or '') for k, v in (jload('indexes/delegations.json', {}).get('laws') or {}).items()}
+    except AttributeError:
+        dl_mst = {}
     miss_cache = jload('indexes/laws_missing.json', {})
     rn_cache = {k: v for k, v in jload('indexes/laws_renamed.json', {}).items() if v.get('v') == 3}   # 옛 방식(v1)으로 확인한 결과는 버려요   # 옛 이름 → 연혁 확인 결과(renamed·repealed·none)
     renamed = []
@@ -562,7 +566,9 @@ def sync_laws(oc, mode):
     for n, name in enumerate(names, 1):
         if mode != 'full':
             r0 = by_name.get(name)
-            if r0 and os.path.exists(os.path.join(ROOT, r0['path'])) and days_ago(r0.get('checked')) < 7:
+            # 위임 목록(매일 갱신)의 판 번호가 받아 둔 본문과 다르면 7일을 기다리지 않고 바로 다시 받아요.
+            fresh = bool(dl_mst.get(name)) and dl_mst[name] != (r0 or {}).get('mst')
+            if r0 and os.path.exists(os.path.join(ROOT, r0['path'])) and days_ago(r0.get('checked')) < 7 and not fresh:
                 continue
             rc = rn_cache.get(name)
             if rc and days_ago(rc.get('tried')) < 30:
