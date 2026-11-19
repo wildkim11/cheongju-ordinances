@@ -40,6 +40,12 @@ def build_ae(repo, ot):
     for r in a6:
         if r.get('t') == 'o':
             ae['n'].setdefault(r['n'], []).append([r['ord'], r['where'], r['q'], 1 if otn(r['q']) in oe else 0, (r.get('line') or '')[:110]])
+    p3 = os.path.join(HERE, 'audit3.json')
+    if os.path.exists(p3):
+        for r in json.load(open(p3, encoding='utf-8')):
+            k = 'l' if r.get('t') == 'l' else 'o'
+            ae[k].setdefault(r['n'], {'d': [], 'm': []}).setdefault('c', []).append(
+                [r['ord'], r['where'], r['jo'], r.get('ed', ''), r.get('rv', ''), (r.get('o') or '')[:90], (r.get('nw') or '')[:90], r.get('terms') or [], r.get('hang', 0), (r.get('line') or '')[:110]])
     print('점검 결과 표시용:', {k: len(v) for k, v in ae.items()})
     return ae
 
@@ -55,6 +61,7 @@ def build(repo):
     env['ASOF'] = ot.get('asof') or ''
     run(['node', 'audit.js'], env)
     run(['node', 'audit2.js'], env)
+    run(['node', 'audit3.js'], env)
     run([sys.executable, 'mkaudit.py'], env)
     au = json.load(open(os.path.join(HERE, 'au.json'), encoding='utf-8'))
     ot['ae'] = build_ae(repo, ot)
