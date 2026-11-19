@@ -39,7 +39,10 @@ for(const o of O){if((o.status||'active')!=='active')continue;const b=rd(o.path)
   const isDel=(arts,k)=>{const a=arts.find(z=>z.k===k);return !!a&&/^제\d+조(?:의\d+)?\s*(?:\([^)]*\)\s*)?삭제/.test(a.x.split('\n')[0].trim())};
   const par=/ 시행규칙$/.test(o.name)?oByName.get(P.otN(o.name.replace(/ 시행규칙$/,''))):null;let partArts=null,pmx=0,pHave=null;if(par){const pb=rd(par.path);partArts=P.otArts(pb);pHave=new Set(partArts.map(a=>a.k));pmx=Math.max(0,...partArts.map(a=>{const q=/제(\d+)조/.exec(a.k);return q?+q[1]:0}))}
   const skip=refs.map(r=>[r.s,r.e]);const CH=/^(?:\s?제\d+항)*(?:\s?제\d+호(?:의\d+)?)*\s?(?:,|·|ㆍ|및|또는)\s?제(\d+)조(?:의(\d+))?/;
+  const aliasK=Object.keys(A||{}).filter(k=>k.length>=2&&!/^(?:시행령|시행규칙|규칙)$/.test(k));
   const seen=new Set();
+  // 조례가 정한 약칭(「이하 "공유재산법"」 등)이 붙은 인용은 어디서 쓰였든 상위법 인용으로 보고 건너뜀(및·쉼표로 이어진 조문 포함)
+  aliasK.forEach(k=>{const ra=new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s?(?:\\([^)\\n]{0,30}\\)\\s?)?제(\\d+)조(?:의(\\d+))?','g');let q;while((q=ra.exec(body))){let e=q.index+q[0].length,rest=body.slice(e),c;while((c=CH.exec(rest))){e+=c[0].length;rest=body.slice(e)}skip.push([q.index,e])}});
   if(par){const rp=/(?<![가-힣」])조례\s?제(\d+)조(?:의(\d+))?/g;let m;while((m=rp.exec(body))){let e=m.index+m[0].length;const ks=['제'+m[1]+'조'+(m[2]?'의'+m[2]:'')];let rest=body.slice(e),c;while((c=CH.exec(rest))){ks.push('제'+c[1]+'조'+(c[2]?'의'+c[2]:''));e+=c[0].length;rest=body.slice(e)}skip.push([m.index,e]);
     for(const k of ks){if(seen.has('p'+k))continue;seen.add('p'+k);const n=+/제(\d+)/.exec(k)[1];if(!pHave.has(k)){const L0=loc(b,m.index);out.push({k:3,ord:o.name,kind:o.kind,where:L0.where,line:L0.line,jo:k,tgt:par.name,why:n>pmx?'조문 없음(모 조례 최종 제'+pmx+'조)':'번호 공백'})}else if(isDel(partArts,k)){const L0=loc(b,m.index);out.push({k:3,ord:o.name,kind:o.kind,where:L0.where,line:L0.line,jo:k,tgt:par.name,why:'삭제된 조문'})}}}}
   const rulNoPar=/ 시행규칙$/.test(o.name)&&!par;const re=/제(\d+)조(?:의(\d+))?/g;let m;
@@ -50,7 +53,7 @@ for(const o of O){if((o.status||'active')!=='active')continue;const b=rd(o.path)
     if(/「[^」]*」/.test(sent)||/(?:^|[^가-힣])(?:법|영|령|규칙|시행령|시행규칙|같은 법|이 법)\s/.test(sent.slice(-30))||/(?:법|영|령|규칙)\s?$/.test(sent))continue;
     if(/^\s*$/.test(body.slice(body.lastIndexOf('\n',s)+1,s)))continue;
     const k='제'+m[1]+'조'+(m[2]?'의'+m[2]:'');if(seen.has(k))continue;seen.add(k);
-    const why=!have.has(k)?(+m[1]>mx?'조문 없음(최종 제'+mx+'조)':'번호 공백'):(isDel(art,k)?'삭제된 조문':'');if(!why)continue;
+    if(par&&pHave&&pHave.has(k)&&!have.has(k))continue;const why=!have.has(k)?(+m[1]>mx?'조문 없음(최종 제'+mx+'조)':'번호 공백'):(isDel(art,k)?'삭제된 조문':'');if(!why)continue;
     const L0=loc(b,s);out.push({k:3,ord:o.name,kind:o.kind,where:L0.where,line:L0.line,jo:k,tgt:o.name,why})}
 }
 fs.writeFileSync('audit4.json',JSON.stringify(out));const c={};out.forEach(r=>c['v'+r.k]=(c['v'+r.k]||0)+1);console.log('검토 후보',out.length,c);
