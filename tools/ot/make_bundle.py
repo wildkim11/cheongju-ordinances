@@ -46,6 +46,19 @@ def build_ae(repo, ot):
             k = 'l' if r.get('t') == 'l' else 'o'
             ae[k].setdefault(r['n'], {'d': [], 'm': []}).setdefault('c', []).append(
                 [r['ord'], r['where'], r['jo'], r.get('ed', ''), r.get('rv', ''), (r.get('o') or '')[:90], (r.get('nw') or '')[:90], r.get('terms') or [], r.get('hang', 0), (r.get('line') or '')[:110]])
+    p4 = os.path.join(HERE, 'audit4.json')
+    if os.path.exists(p4):
+        ae['v'] = {}
+        for r in json.load(open(p4, encoding='utf-8')):
+            k = r['k']
+            if k == 1:
+                row = [1, r['where'], r['law'], r['w'], '/'.join(r.get('to') or []) + '|' + (r.get('d') or '')]
+            elif k == 2:
+                row = [2, r['where'], r['w'], '', '']
+            else:
+                row = [3, r['where'], r['jo'], r['why'], r.get('tgt') or '']
+            row.append((r.get('line') or '')[:110])
+            ae['v'].setdefault(r['ord'], []).append(row)
     print('점검 결과 표시용:', {k: len(v) for k, v in ae.items()})
     return ae
 
@@ -62,6 +75,7 @@ def build(repo):
     run(['node', 'audit.js'], env)
     run(['node', 'audit2.js'], env)
     run(['node', 'audit3.js'], env)
+    run(['node', 'audit4.js'], env)
     run([sys.executable, 'mkaudit.py'], env)
     au = json.load(open(os.path.join(HERE, 'au.json'), encoding='utf-8'))
     ot['ae'] = build_ae(repo, ot)
