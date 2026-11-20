@@ -79,6 +79,33 @@ def build(repo):
     run([sys.executable, 'mkaudit.py'], env)
     au = json.load(open(os.path.join(HERE, 'au.json'), encoding='utf-8'))
     ot['ae'] = build_ae(repo, ot)
+    # 점검 결과(인용 오류·내용 변경·검토)가 바뀐 조례도 업데이터가 「바뀜」으로 알아보도록 ms의 일련번호 뒤에 점검 표시를 붙임
+    try:
+        import hashlib
+        by = {}
+        def add(name, row):
+            by.setdefault(name, []).append(row)
+        for g in ('l', 'o'):
+            for v in ot['ae'].get(g, {}).values():
+                for k in ('d', 'm', 'c'):
+                    for r in v.get(k, []) if isinstance(v, dict) else []:
+                        add(r[0], [g, k] + r)
+        for g in ('x', 'n'):
+            for v in ot['ae'].get(g, {}).values():
+                for r in v:
+                    add(r[0], [g] + r)
+        for n, rows in ot['ae'].get('v', {}).items():
+            for r in rows:
+                add(n, ['v'] + r)
+        nid = {x.get('name'): x.get('id') for x in json.load(open(os.path.join(repo, 'indexes', 'ordinances.json'), encoding='utf-8')) if x.get('id')}
+        ms = ot.setdefault('ms', {}).setdefault('o', {})
+        for n, rows in by.items():
+            i = nid.get(n)
+            if i and i in ms:
+                h = hashlib.sha1(json.dumps(rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:6]
+                ms[i] = str(ms[i]) + '|a' + h
+    except Exception as e:
+        print('점검 표시 붙이기 건너뜀:', e)
     # 개정 예정 법령마다 현재 시행 중인 판의 시행일(저장소 indexes/laws.json). 화면에서 「현재 ○○ 시행본 → 개정 예정 ○○」으로 보여 줌
     lp = os.path.join(os.path.abspath(os.path.expanduser(repo)), 'indexes', 'laws.json')
     if os.path.exists(lp):
