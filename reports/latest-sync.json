@@ -1,9 +1,12 @@
 {
- "checkedAt": "2026-11-20T11:27:15+09:00",
+ "checkedAt": "2026-11-21T11:35:32+09:00",
  "mode": "incremental",
  "listed": 761,
  "new": [],
- "changed": [],
+ "changed": [
+  "2127393",
+  "2245755"
+ ],
  "absent": [],
  "errors": [],
  "laws_missing": [
